@@ -12,10 +12,11 @@ read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | t
 [ -f "$MSG_FILE" ] || { echo "slack_send: $MSG_FILE not found" >&2; exit 1; }
 TOKEN="$(read_env SLACK_BOT_TOKEN)"
 CHANNEL="$(read_env SLACK_CHANNEL_ID)"
+API="$(read_env SLACK_API_BASE)"; API="${API:-https://slack.com/api}"
 [ -n "$TOKEN" ] && [ -n "$CHANNEL" ] || { echo "slack_send: SLACK_BOT_TOKEN / SLACK_CHANNEL_ID missing in $ENV_FILE" >&2; exit 1; }
 
 PAYLOAD="$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": open(sys.argv[2], encoding="utf-8").read()}))' "$CHANNEL" "$MSG_FILE")"
-RESP="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+RESP="$(curl -sS -X POST "$API/chat.postMessage" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json; charset=utf-8" \
   --data-binary "$PAYLOAD")"
 printf '%s' "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("sent ts=" + d["ts"]) if d.get("ok") else (print("slack_send error: " + str(d.get("error")), file=sys.stderr), sys.exit(1))'

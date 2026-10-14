@@ -6,6 +6,7 @@
 #   SLACK_BOT_TOKEN=<token with channels:history>      (never commit; never echo)
 #   SLACK_CHANNEL_ID=<channel id>
 #   SLACK_POLL_SECONDS=20                              (optional)
+#   SLACK_API_BASE=https://slack.com/api               (optional; tests point it at a local mock)
 # usage: scripts/slack/slack_watch.sh [path/to/.env]
 set -uo pipefail
 ENV_FILE="${1:-.env}"
@@ -17,6 +18,7 @@ read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | t
 TOKEN="$(read_env SLACK_BOT_TOKEN)"
 CHANNEL="$(read_env SLACK_CHANNEL_ID)"
 POLL="$(read_env SLACK_POLL_SECONDS)"; POLL="${POLL:-20}"
+API="$(read_env SLACK_API_BASE)"; API="${API:-https://slack.com/api}"
 [ -n "$TOKEN" ] && [ -n "$CHANNEL" ] || { echo "slack_watch: SLACK_BOT_TOKEN / SLACK_CHANNEL_ID missing in $ENV_FILE" >&2; exit 1; }
 
 mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
@@ -26,7 +28,7 @@ python3 -c "import time,sys; open(sys.argv[1],'w').write(f'{time.time():.6f}')" 
 while true; do
   RESP="$(curl -sS -G -H "Authorization: Bearer $TOKEN" \
     --data-urlencode "channel=$CHANNEL" --data-urlencode "oldest=$(cat "$TS_FILE")" --data-urlencode "limit=20" \
-    https://slack.com/api/conversations.history 2>/dev/null || true)"
+    "$API/conversations.history" 2>/dev/null || true)"
   printf '%s' "$RESP" | TS_FILE="$TS_FILE" python3 -c '
 import json, os, sys
 tsf = os.environ["TS_FILE"]

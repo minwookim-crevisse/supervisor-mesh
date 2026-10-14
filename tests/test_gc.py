@@ -55,7 +55,8 @@ class DocsDriftTests(unittest.TestCase):
             self.assertNotIn("placeholder", out)
 
     def test_repo_itself_has_no_doc_drift(self):
-        code, out = quiet(check_docs_drift.main, ["--root", str(ROOT), "--exclude", "templates", "--exclude", "docs/core"])
+        args = ["--root", str(ROOT), "--exclude", "templates", "--exclude", "docs/core"]
+        code, out = quiet(check_docs_drift.main, args)
         self.assertEqual(code, 0, out)
 
 

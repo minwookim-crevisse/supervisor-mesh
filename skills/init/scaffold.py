@@ -84,7 +84,8 @@ def merge_agents(target: Path, log: Log) -> None:
         return
     body = tpl.split("\n", 1)[1]  # drop the template title; keep the project's own
     if not log.dry:
-        dest.write_text(text.rstrip("\n") + f"\n\n{AGENTS_MARKER}\n# Harness (supervisor-mesh)\n{body}", encoding="utf-8")
+        block = f"\n\n{AGENTS_MARKER}\n# Harness (supervisor-mesh)\n{body}"
+        dest.write_text(text.rstrip("\n") + block, encoding="utf-8")
     log.add("MERGE", "AGENTS.md", "appended harness block")
 
 
@@ -124,7 +125,8 @@ def merge_pyproject(target: Path, log: Log) -> None:
     dest = target / "pyproject.toml"
     text = dest.read_text(encoding="utf-8")
     if "[tool.ruff" in text or "[tool.mypy]" in text:
-        log.add("SKIP", "pyproject.toml", "ruff/mypy config exists — compare with templates/constraints/python manually")
+        log.add("SKIP", "pyproject.toml",
+                "ruff/mypy config exists — compare with templates/constraints/python manually")
         return
     frag = (TEMPLATES / "constraints/python/pyproject.fragment.toml").read_text(encoding="utf-8")
     if not log.dry:
