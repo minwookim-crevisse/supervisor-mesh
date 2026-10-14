@@ -1,0 +1,18 @@
+# supervisor-mesh GC — scheduled harness housekeeping (methodology §14)
+# why: drift is gradual; a weekly automated sweep + on-demand /supervisor-mesh:gc keeps the harness honest.
+name: harness housekeeping
+on:
+  schedule: [{ cron: "0 9 * * 1" }]   # weekly Mon 09:00 UTC
+  workflow_dispatch: {}
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python scripts/gc/check_docs_drift.py --exclude templates --exclude docs/core
+      - run: python scripts/gc/check_structure.py --exclude templates --exclude docs/core
+      - run: python -m unittest discover -s tests
+      - run: scripts/scrub.sh
+      - run: pip install vulture ruff && vulture skills scripts tests --min-confidence 80 && ruff check .

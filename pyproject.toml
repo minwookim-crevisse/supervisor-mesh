@@ -1,0 +1,14 @@
+# Repo-own constraint config (Pillar ②) for supervisor-mesh's own scripts and tests.
+# Not to be confused with templates/constraints/python (the shipped template).
+[project]
+name = "supervisor-mesh-dev"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["templates", "docs/core"]   # why: recursion guard (DEC-0004) — shipped placeholders and example patterns
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "TID"]   # why: style · unused/dead code · import order · naming · tidy imports

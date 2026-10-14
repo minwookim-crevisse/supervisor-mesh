@@ -1,0 +1,14 @@
+{
+  "name": "supervisor-mesh",
+  "owner": { "name": "minwookim-crevisse" },
+  "metadata": {
+    "description": "Marketplace for the supervisor-mesh orchestration harness plugin."
+  },
+  "plugins": [
+    {
+      "name": "supervisor-mesh",
+      "source": "./",
+      "description": "Supervisor-mesh orchestration harness (install into any project; run /supervisor-mesh:init)."
+    }
+  ]
+}

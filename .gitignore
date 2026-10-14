@@ -1,0 +1,22 @@
+# secrets — never committed
+.env
+.env.*
+!.env.example
+.auth/
+*.pem
+*.key
+*.token
+*token*.txt
+env.local.txt
+.scrub-local
+# local data / env junk
+*.sqlite
+*.sqlite3
+*:Zone.Identifier
+.DS_Store
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/

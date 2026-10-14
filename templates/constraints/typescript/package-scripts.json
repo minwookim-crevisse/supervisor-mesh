@@ -1,0 +1,6 @@
+{
+  "typecheck": "tsc --noEmit",
+  "lint": "eslint . --max-warnings=0",
+  "lint:boundary": "depcruise src --config .dependency-cruiser.cjs",
+  "check:unused": "ts-prune -p tsconfig.json"
+}

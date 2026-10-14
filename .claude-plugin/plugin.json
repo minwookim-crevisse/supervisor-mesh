@@ -1,0 +1,10 @@
+{
+  "name": "supervisor-mesh",
+  "description": "Multi-session supervisor-mesh orchestration harness: PM / role-lead / worker tiers over projmux, evidence-first gates, and a primed 4-pillar project scaffold.",
+  "version": "0.1.0",
+  "author": { "name": "minwookim-crevisse" },
+  "homepage": "https://github.com/minwookim-crevisse/supervisor-mesh",
+  "repository": "https://github.com/minwookim-crevisse/supervisor-mesh",
+  "license": "MIT",
+  "keywords": ["orchestration", "multi-agent", "harness", "projmux", "quality-gates"]
+}

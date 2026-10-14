@@ -1,0 +1,12 @@
+; supervisor-mesh primed constraint — layer boundary (the dependency-cruiser equivalent for Python)
+[importlinter]
+root_package = <PACKAGE>
+
+[importlinter:contract:layer-boundary]
+name = read layer must not import write layer
+type = forbidden
+source_modules =
+    <PACKAGE>.<READ_LAYER>
+forbidden_modules =
+    <PACKAGE>.<WRITE_LAYER>
+; why: read/UI never imports write/settlement/publish; the server re-checks every write.
