@@ -10,7 +10,7 @@ allowed-tools: Read Bash(projmux:*)
 Dispatch a task to a role lead over projmux. `$ARGUMENTS` = `<role> <task…>` (first word = role).
 
 ## Steps
-1. **Resolve the target.** `projmux get agents -o json`; find the item with `metadata.labels.role == <role>` (or named `role-<role>`) whose `status.phase == "Running"`.
+1. **Resolve the target.** `projmux get agents -o json`; find the item with `metadata.labels.role == <role>` (or named `role-<role>`) whose `spec.workspace.cwd == ${CLAUDE_PROJECT_DIR}` and `status.phase == "Running"`. Never match on the label alone — several repos can share one projmux project.
    No such agent (absent, Offline or Failed) → 🔴 STOP with: "role <role> has no pane — run /supervisor-mesh:spawn-roles (or /supervisor-mesh:add-agent for a new role) first." Do NOT auto-spawn. dispatch is send-only; explicit mesh setup is the ritual (no silent failure, no silent creation).
 2. **Tracker row.** If the project keeps a tracker, confirm the work order has a row. No row = no dispatch (talk-only dispatch is lost work). Only the orchestrator writes the tracker.
 3. **Compose the order** with this header prepended verbatim, then the task (read set as absolute paths, mission, DoD as captured evidence, deliverables, report target):

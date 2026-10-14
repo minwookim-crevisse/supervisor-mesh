@@ -3,6 +3,13 @@
 > Single owner: the Orchestrator writes this. Others propose via their report file.
 > This log OUTRANKS every other doc on conflict. Newest decision wins.
 
+## DEC-0007 — Every shipped change bumps the plugin version
+- Date: 2026-10-14
+- Status: accepted
+- Context: live QA showed `claude plugin update` keeps the cached copy while `plugin.json` `version` is unchanged, so installed users never receive fixes.
+- Decision: any change under the shipped layer bumps `version` in `.claude-plugin/plugin.json` (patch for fixes).
+- Consequences: Ship checks the bump before pushing; the marketplace entry still omits `version`.
+
 ## DEC-0006 — init is a deterministic script, not free-form writes
 - Date: 2026-10-14
 - Status: accepted

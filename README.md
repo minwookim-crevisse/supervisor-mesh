@@ -69,4 +69,4 @@ Secrets and real customer data never go into the plugin, the repo, docs, or logs
 This repo is itself built with the 4 pillars — see its own [`AGENTS.md`](AGENTS.md), `pyproject.toml` (ruff), `tests/`, `docs/decisions/`, and GC (`make check`). The shipped layer (`.claude-plugin/`, `skills/`, `agents/`, `docs/core/`, `templates/`) is kept separate from the repo's own harness. GC and lint exclude `templates/` and `docs/core/` (they carry placeholders and example patterns on purpose).
 
 ## License / version
-MIT. Pre-release (0.1.0): the marketplace entry omits `version` so installs track the latest commit; `plugin.json` pins `version` on release.
+MIT. Pre-release (0.1.x). `plugin.json` carries the version and every shipped change bumps it — `claude plugin update` only delivers new code when the version changes. QA evidence: `docs/qa/`.

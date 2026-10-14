@@ -1,0 +1,6 @@
+# supervisor-mesh primed constraint (Pillar ② — Python type gate). Appended to pyproject.toml by init when the project has no mypy table.
+[tool.mypy]
+strict = true                   # why: catch type errors before runtime
+warn_unused_ignores = true      # why: stale ignores = silent drift
+# CI must run all three, each exit 0: `ruff check .` · `lint-imports` (import-linter) · `mypy <PACKAGE>`.
+# Shared-dep version pins: pin and DO NOT bump arbitrarily  # why: env-wide breakage risk.

@@ -1,0 +1,11 @@
+# supervisor-mesh primed constraint (Pillar ② — Python lint). Appended to pyproject.toml by init when the project has no ruff table.
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "TID"]   # why: style(E) · dead code/unused(F) · import order(I) · naming(N) · tidy imports(TID)
+ignore = []
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"    # why: absolute imports only — refactor-safe, explicit origin

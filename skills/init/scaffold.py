@@ -105,6 +105,9 @@ def merge_gitignore(target: Path, log: Log) -> None:
 
 def merge_package_scripts(target: Path, log: Log) -> None:
     dest = target / "package.json"
+    if not dest.exists():
+        log.add("SKIP", "package.json", "absent — create it with your package manager, then rerun init")
+        return
     raw = dest.read_text(encoding="utf-8")
     pkg = json.loads(raw)
     wanted = json.loads((TEMPLATES / "constraints/typescript/package-scripts.json").read_text(encoding="utf-8"))
@@ -121,17 +124,30 @@ def merge_package_scripts(target: Path, log: Log) -> None:
     log.add("MERGE", "package.json", "+scripts " + ",".join(added))
 
 
+PYPROJECT_TABLES = {"[tool.ruff]": "pyproject.ruff.toml", "[tool.mypy]": "pyproject.mypy.toml"}
+
+
 def merge_pyproject(target: Path, log: Log) -> None:
+    """Append each primed table that is absent; never touch a table the project already has."""
     dest = target / "pyproject.toml"
-    text = dest.read_text(encoding="utf-8")
-    if "[tool.ruff" in text or "[tool.mypy]" in text:
-        log.add("SKIP", "pyproject.toml",
-                "ruff/mypy config exists — compare with templates/constraints/python manually")
+    existed = dest.exists()
+    text = dest.read_text(encoding="utf-8") if existed else ""
+    added, kept = [], []
+    for table, src in PYPROJECT_TABLES.items():
+        name = re.escape(table[1:-1])
+        if re.search(rf"^\[{name}[.\]]", text, re.M):  # table header, incl. sub-tables like [tool.ruff.lint]
+            kept.append(table)
+            continue
+        frag = (TEMPLATES / "constraints/python" / src).read_text(encoding="utf-8")
+        text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + frag
+        added.append(table)
+    if not added:
+        log.add("SKIP", "pyproject.toml", "ruff + mypy tables present — compare with templates/constraints/python")
         return
-    frag = (TEMPLATES / "constraints/python/pyproject.fragment.toml").read_text(encoding="utf-8")
     if not log.dry:
-        dest.write_text(text.rstrip("\n") + "\n\n" + frag, encoding="utf-8")
-    log.add("MERGE", "pyproject.toml", "+[tool.ruff] [tool.mypy]")
+        dest.write_text(text, encoding="utf-8")
+    note = "+" + " ".join(added) + (f"; kept existing {' '.join(kept)}" if kept else "")
+    log.add("MERGE" if existed else "CREATE", "pyproject.toml", note)
 
 
 def main(argv: list[str] | None = None) -> int:
