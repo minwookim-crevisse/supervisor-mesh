@@ -20,3 +20,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+# office-hours spec-review evidence (local process artifact)
+docs/designs/*.review.*/
+.gstack/

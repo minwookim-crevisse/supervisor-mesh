@@ -9,7 +9,7 @@ SELF="scripts/scrub.sh"
 FILES=$(git ls-files --cached --others --exclude-standard | grep -vxF "$SELF")
 
 declare -A PATTERNS=(
-  [slack-token]='xox[abprs]-[A-Za-z0-9-]{8,}'
+  [slack-token]='(xox[abeprs][.-]|xapp-)[A-Za-z0-9-]{8,}'
   [anthropic-key]='sk-ant-[A-Za-z0-9_-]{8,}'
   [openai-key]='sk-[A-Za-z0-9]{32,}'
   [github-token]='gh[pousr]_[A-Za-z0-9]{20,}'
