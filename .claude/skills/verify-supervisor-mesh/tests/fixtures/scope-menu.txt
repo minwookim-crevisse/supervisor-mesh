@@ -1,0 +1,34 @@
+
+
+❯ /reload-plugins                                                        
+  ⎿  Reloaded: 3 plugins · 40 skills · 5 agents · 0 hooks · 0 plugin MCP
+     servers · 0 plugin LSP servers
+     1 error during load. Run /plugin for details.
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Plugins  Discover   Installed   Marketplaces   Errors (1)   Stats     
+                                   
+   Plugin Details                                 
+
+   supervisor-mesh
+
+   Supervisor-mesh orchestration harness (install into any project;
+   run /supervisor-mesh:init).
+
+   By: <author>
+
+   Will install:
+   · Components will be discovered at installation
+
+   ⚠ Make sure you trust a plugin before installing, updating, or 
+     using it. Anthropic does not control what MCP servers, files, or 
+     other software are included in plugins and cannot verify that 
+     they will work as intended or that they won't change. See each 
+     plugin's homepage for more information.
+
+   ❯ Install for you (user scope)
+     Install for all collaborators on this repository (project scope) 
+     Install for you, in this repo only (local scope)                  
+     Open homepage                                                       
+     Back to plugin list                                            
+
+    Enter to select · Esc to go back                                   

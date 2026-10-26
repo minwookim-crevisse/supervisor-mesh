@@ -168,10 +168,11 @@ On a repo without `docs/tracker.md`, `mesh init` adds the tracker and work-order
 - Re-running `/pm`:
   - **when `WO-0001` is closed**, changes nothing: byte-identical file hashes and an unchanged agent list;
   - **after a partial run**, only `docs/tracker.md`, `docs/work-orders/WO-0001.md` and the Part B files may change. No scaffolded file or agent is created twice (unchanged hashes for every other file; the agent count grows only by roles not yet created).
-- Outside a managed pane, or with python3 < 3.10: `/pm`, `/init`, `/spawn-roles` and `/dispatch` stop at preflight with the fix command, before any write.
+- Outside a managed pane, or with python3 < 3.11 (D23; corrected from 3.10 by the CEO review): `/pm`, `/init`, `/spawn-roles` and `/dispatch` stop at preflight with the fix command, before any write.
 - `mesh dispatch` without a tracker row id is refused.
 - The manual `/spawn-roles` path and the `/pm` path issue identical `projmux create agent` arguments. This is guaranteed because both call `mesh spawn`, and checked by a unit test with a fake projmux.
 - `make check` stays green; there is a new regression test file for `mesh`, and scrub reports 0.
+- Effect is measured, not asserted (knowledge 12 sec. 7; B1, D43 as revised by X6, D50): a baseline of rework count per item and PASS reversals is recorded once from finished legacy items only (WO-0001..0008 with a final status), `mesh status --metrics` prints the same two counters from state.json, and the T8 release report shows them as indicative (small sample, not proof); improvement is not a pass/fail condition.
 
 ## Distribution Plan
 Same plugin and marketplace. Ship as `0.2.0` (new skill plus CLI; DEC-0007 requires a version bump). Users get it with `claude plugin update supervisor-mesh@supervisor-mesh`. The README Quickstart becomes:
@@ -211,7 +212,7 @@ Source: gap analysis of the operator's knowledge bundle (Project, Architecture, 
 | knowledge | missing | decisions/glossary in repo; no Vault link, no role context assembly | E7 |
 
 ### Expanded scope items
-- **E1 `.mesh/` layout.** `mesh init` creates `.mesh/state.json` (empty work set), `.mesh/config.toml` (Vault path, project folder, retry limits, verification commands, Slack enabled flag) and the generated `docs/tracker.md` view. Re-runs never overwrite user values; missing / conflicting / unset keys are reported separately.
+- **E1 `.mesh/` layout.** `mesh init` creates `.mesh/state.json` (empty work set), `.mesh/config.toml` (Vault path optional until stage 2 per R1, project folder, retry limits, verification commands, Slack enabled flag) and the generated `docs/tracker.md` view. Re-runs never overwrite user values; missing / conflicting / unset keys are reported separately.
 - **E1b Standard minimum layout (what `mesh init` builds; this repo dogfoods it, DEC-0014).**
 
   | path | pillar / purpose | writer |
@@ -230,20 +231,21 @@ Source: gap analysis of the operator's knowledge bundle (Project, Architecture, 
   | stack constraint config (`.dependency-cruiser.cjs` / `.eslintrc.cjs`, or `.importlinter` + pyproject ruff/mypy) | constraint pillar | qa |
 
   No other top-level docs folder is created; QA evidence lives in `docs/reports/` (no separate `docs/qa/`). The `templates/AGENTS.md` layer map, `templates/part-b-checklist.md` and `mesh/docs.py` manifest list exactly this table (WO-0010). `scripts/gc/check_docs_drift.py` is extended to fail when a path in the AGENTS.md layer map is missing.
-- **E2 State machine (stdlib, behind an interface).** States `draft → ready → running → verifying → verified`, plus `rework`, `blocked`, `cancelled`. Every transition is a `mesh work <verb>` command with guards:
-  - `ready` needs a contract (goal, done criteria, role, depends, scope);
-  - `running` needs depends verified, the target agent live (label + cwd + Running), and a new attempt id;
-  - `verifying` needs the attempt id and the changed commit;
-  - `verified` needs every required verification command recorded with exit code, timestamp and the same commit; a later commit invalidates the evidence;
-  - `rework` needs a failure record (class + evidence);
-  - retries beyond the configured limit force `blocked`.
-  Stale or duplicate results (older attempt id) are rejected. State writes use a lock file plus atomic replace. Replaces eng-review D8; D7's parser only imports an existing Markdown tracker once.
+- **E2 State machine (stdlib, behind an interface).** The full model (states, blocked reasons, item record, transition table, failure classes, counters, evidence, concurrency, Slack linkage, invariants, decision trace) lives in `docs/designs/work-item-state-model.md`, which is the single source for T2. It consolidates D40-D63 and supersedes the earlier bullet list and the inline transition table that were here (line references in the review records below point to that removed text). Replaces eng-review D8; D7's parser only imports an existing Markdown tracker once.
 - **E3 Slack is a required init step (D02).** `mesh init` asks for Slack setup and records `slack.enabled`; preflight reports Slack unconfigured as a FAIL with the fix, unless the operator explicitly opts out (recorded as a decision).
 - **E4 Slack ↔ work linkage.** A top-level request creates a `draft` work item and maps `channel:thread_ts → work id`. Replies in that thread attach to that item; the PM posts progress and results in the same thread. An item awaiting operator input is in `blocked(reason=awaiting_user)` and resumes when a thread reply arrives. Duplicate Slack deliveries are deduplicated by message ts.
+  A reply on a `verified` item that is not yet closed attaches to it and notifies the PM, and `close` is refused until the PM acknowledges it (X5, D49). A reply in a followed thread of a `closed` item never reopens it: it creates a new `draft` with `follows=<original id>`, the PM acknowledges the new id in the same thread, the thread is remapped to the new draft so later replies attach to it, and the original evidence stays untouched (knowledge 05 F -> A; W2, D41).
 - **E5 Role profiles.** Each role maps to a projmux profile (model, effort, instructions); `mesh spawn` passes `--profile`. Every rule is reported as enforced (projmux / tool permission) or prompt-only; prompt-only rules are never shown as enforced.
 - **E6 Evidence-gated completion.** `mesh work verify` runs the configured verification commands itself and records the outputs; a lead's prose report alone cannot reach `verified`. Missing tools are recorded as `not_run` (not as pass).
 - **E7 Vault records (DEC-0011).** After a gate passes, `mesh` writes session / failure / decision records to `<vault>/<project>/` using the bundle's templates, checking the target hash first. It never writes outside the project folder; common knowledge is promoted by a human.
 - **E8 Slack hardening carried in.** N-01: `send` only accepts files under `scripts/slack/outbox/`.
+
+- **E9 Layered structure (operator request 2026-10-19; items decided in eng review round 2, G1-G5).** Goal: the knowledge bundle's five layers (user contact, coordination, rules/verification, execution link, execution base) and its instruction hierarchy (common → project → role/area, a child may add or narrow, never loosen) become visible and checkable in the repo and in every project `mesh init` builds.
+  - G1 layer map + import contract for `mesh/` (`.importlinter` layers);
+  - G2 folder-level instruction files with an inheritance line;
+  - G3 one common agent block stamped into every agent;
+  - G4 one naming table, checked by GC;
+  - G5 a docs index + frontmatter metadata.
 
 ### Deferred (stage 2+)
 LangGraph engine evaluation, broad parallel execution, role-specific context assembly beyond the contract's read set, automatic policy promotion (never automatic, D07), dashboards.
@@ -312,6 +314,506 @@ State: approved
 Actual answer: A — add `mesh tracker` commands (D8, 2026-10-14)
 Accepted scope: `mesh tracker add <id> --title --role --depends` and `mesh tracker set <id> <status> [--note]` in `mesh/docs.py` + `mesh/cli.py` (vocabulary, id and role validated; marker-safe idempotent table edit; tests); `pm-orchestrator.md` states tracker writes go only through these commands; D7 parser stays as safety net for hand edits; WO-0009 (+ PM rule in WO-0012).
 History: none
+
+## Eng Review round 2 (/plan-eng-review, 2026-10-19, DEC-0013)
+Target: this document incl. Scope Expansion E1-E8, E1b. Carried forward: D2 (full dispatch port), D4/C1, D5/C2, D6/C3. Superseded by DEC-0010 (factual, no question): D3 module list (now D10), D7 (Markdown parser = one-time import only), D8/C5 (replaced by E2 guarded `mesh work` verbs).
+
+### Scope record (round 2)
+feature answers: D9 = A, keep E7 (Vault records) in stage 1; structure: D10 = Original arrangement, `bin/mesh` + `mesh/{cli, projmux, docs, state, slack, init, spawn, dispatch, vault}.py` (state.py = work items, attempts, transitions, evidence, lock, tracker rendering; slack.py = Slack thread <-> work-item mapping and inbound/outbound handling; vault.py = Vault writes); accepted scope: E1-E8 + E1b in stage 1; pending remedies: F1, F2, F3, F4, F5.
+Scope Challenge result: scope accepted as-is.
+
+### F1: Slack bridge is copied into each project (copy drift)
+Finding: F1, P2, confidence 8/10, `skills/slack-setup/SKILL.md:31` "copy `${CLAUDE_PLUGIN_ROOT}/templates/slack/slack_bridge.py` to `scripts/slack/slack_bridge.py`" — reviewer: plan-eng-review.
+Plan baseline: bridge copied per project (0.1.2); E4 adds work linkage in `mesh/slack.py`.
+Runtime evidence: test repo c holds a copy that already differed from the template once this week (re-copied by hand during live QA).
+Comparison grid: | F1 | current: per-project copy, plugin updates never reach it | A: bridge becomes `mesh slack check|send|watch` run from the plugin (single implementation, DEC-0009); per-project state stays in the user state dir; slack-setup stops copying | B: keep the copy |
+State: approved
+Actual answer: A — bridge becomes `mesh slack` commands (D11, 2026-10-19)
+Accepted scope: Move the bridge into `mesh/slack.py`; `mesh slack check|send|watch` run from the plugin; slack-setup stops copying and only guides .env, runs check, arms watch; existing project copies get an upgrade note; tests move with the code.
+
+### F2: who turns an inbound Slack request into a work item
+Finding: F2, P1, confidence 8/10, design E4 "A top-level request creates a `draft` work item" — actor unspecified — reviewer: plan-eng-review.
+Plan baseline: unspecified.
+Runtime evidence: the watcher is a separate process that prints lines to the PM session; dedup by message ts exists only inside the watcher state today.
+Comparison grid: | F2 | current: unspecified | A: the watcher (code) creates/attaches work items in state.json under the state lock, dedup by message ts; the PM is notified with the work id | B: the watcher only prints; the PM model calls `mesh work new --slack <channel:ts>` (dedup relies on the model) |
+State: approved
+Actual answer: A — the watcher creates work items (D12, 2026-10-19)
+Accepted scope: `mesh slack watch` creates a `draft` item for a top-level request and attaches thread replies to the mapped item, inside the state lock, dedup by message ts; it prints one line per event carrying the work id; lock-contention tests.
+
+### F3: evidence bound to a commit while the tree is dirty
+Finding: F3, P1, confidence 9/10, design E2 "`verified` needs every required verification command recorded with exit code, timestamp and the same commit" — reviewer: plan-eng-review.
+Plan baseline: evidence keyed by commit only.
+Runtime evidence: leads work in the shared tree uncommitted (this repo held 18 uncommitted files until b656008); a verify run on a dirty tree passes against content no commit records.
+Comparison grid: | F3 | current: commit only | A: evidence records commit + worktree fingerprint (hash of `git diff HEAD` + untracked files); any later change invalidates it | B: `mesh work verify` refuses a dirty tree (commit first) | C: commit only |
+State: approved
+Actual answer: A — commit + worktree fingerprint (D13, 2026-10-19)
+Accepted scope: Evidence records commit + worktree fingerprint (hash of `git diff HEAD` plus untracked, non-ignored files); any later change invalidates `verified`; tests for clean, dirty and post-verify edits.
+
+### F4: escape hatch for status changes
+Finding: F4, P2, confidence 8/10, design E2 lists guarded verbs but no rule for manual correction — reviewer: plan-eng-review.
+Plan baseline: guarded verbs only (override unspecified).
+Runtime evidence: n/a (design gap).
+Comparison grid: | F4 | current: unspecified | A: no raw `set`; one `mesh work override <id> <state> --reason` allowed only from the operator's PM pane, logged as a transition with actor + reason and shown in the tracker | B: no override at all (edit state.json by hand) |
+State: approved
+Actual answer: A — operator-only override (D14, 2026-10-19)
+Accepted scope: `mesh work override <id> <state> --reason`, allowed only from the operator's PM pane (caller identity via projmux), logged as a transition with actor and reason, flagged in the tracker view; tests incl. refusal from a lead pane.
+
+### F5: who commits the Vault Git repository (E7 kept by D9)
+Finding: F5, P2, confidence 9/10, DEC-0011 "external Obsidian Vault, managed as a Git repository" — commit actor unspecified — reviewer: plan-eng-review.
+Plan baseline: unspecified.
+Runtime evidence: Vault currently is a plain Windows folder, not a Git repo.
+Comparison grid: | F5 | current: unspecified | A: `mesh` commits its own record writes in the Vault repo (one commit per record, author "supervisor-mesh"), never pushes; human edits committed by the human | B: `mesh` only writes files; the human commits |
+State: approved
+Actual answer: A — mesh commits only its own records (D15, 2026-10-19)
+Accepted scope: `mesh/vault.py` writes one record and commits only that path (`git commit -- <path>`, author supervisor-mesh), never pushes; `mesh init` checks the Vault is a Git repo and prints the one-time `git init` fix if not; tests with a temp Vault repo incl. a concurrent human edit left untouched.
+
+### G1: layer map + import contract for mesh/
+Finding: G1, P2, confidence 9/10, design E9; knowledge 02 requires five layers and 06 asks for import checks; no layer map exists in AGENTS.md or code — reviewer: plan-eng-review (operator request).
+Plan baseline: not in design before E9.
+State: approved
+Actual answer: A — layers contract (D16, 2026-10-19)
+Accepted scope: AGENTS.md layer table (1 user contact: cli, slack; 2-3 coordination + rules: dispatch, spawn, init, state; 4 execution link: projmux; knowledge base: docs, vault; 5 external: projmux/Claude Code); `.importlinter` layers contract `mesh.cli | mesh.slack -> mesh.dispatch | mesh.spawn | mesh.init -> mesh.state -> mesh.projmux | mesh.docs | mesh.vault`; `lint-imports` in make check and CI (dev-only dependency); WO-0009.
+
+### G2: folder-level instruction files with inheritance
+Finding: G2, P2, confidence 9/10, only root AGENTS.md exists (`find -name AGENTS.md`): templates/ rules live in the root file — reviewer: plan-eng-review (operator request).
+Plan baseline: not in design before E9.
+State: approved
+Actual answer: A — folder instruction files + inheritance check (D17, 2026-10-19)
+Accepted scope: `AGENTS.md` + `CLAUDE.md` (`@AGENTS.md`) in agents/, skills/, templates/, docs/, tests/, mesh/; first line `Inherits: ../AGENTS.md`; a child may add or narrow rules, never loosen; folder-specific rules move out of the root file; `check_docs_drift.py` verifies the Inherits line and rejects loosening phrases; `mesh init` lays the same pattern for docs/ and tests/ in new projects (WO-0010); orchestrator writes the files (coordination docs).
+
+### G3: one common agent block for every agent
+Finding: G3, P2, confidence 9/10, `agents/pm-orchestrator.md` and `agents/scope-mapper.md` carry no INVARIANT block (grep count 0 markers); role leads are stamped and byte-checked by tests/test_components.py — reviewer: plan-eng-review (operator request).
+Plan baseline: not in design before E9.
+State: approved
+Actual answer: B — keep role-lead inheritance only; the PM role differs, so pm-orchestrator and scope-mapper stay hand-written (D18, 2026-10-19, operator free-text answer)
+Accepted scope: no change. Residual risk recorded: the shared rules (evidence-first, Karpathy 4, peer-message rule) are separate copies in pm-orchestrator.md; reopen if they drift.
+
+### G4: one naming table checked by GC
+Finding: G4, P2, confidence 9/10, `tests/README.md:7` uses `test_*_regression_NN.py`, `templates/tests/README.md:7` uses `*.regression-NN.<ext>`; `docs/reports/2026-10-14-live-qa.md` breaks the WO pattern; decisions are one growing file — reviewer: plan-eng-review (operator request).
+Plan baseline: not in design before E9.
+State: approved
+Actual answer: A — naming table + GC checks (D19, 2026-10-19)
+Accepted scope: `docs/conventions/naming.md` (role-lead-<role>.md, WO-<id>-<role>.md, DEC-NNNN-<slug>.md, test_<area>_regression_NN.py, SKILL.md, work-orders <date>-<slug>.md); `check_structure.py` enforces it; regression-test name unified in templates/tests/README.md; live-QA report renamed to the WO pattern; vulture added to make check (dev dependency, whitelist file); GC also reports ignored junk such as __pycache__ under scripts/ and templates/; same table shipped by init (WO-0010).
+
+### G5: docs index + frontmatter metadata
+Finding: G5, P2, confidence 9/10, no docs index; no status/updated/supersedes metadata on decisions, designs or reports — reviewer: plan-eng-review (operator request).
+Plan baseline: not in design before E9.
+State: approved
+Actual answer: A — index + frontmatter + per-decision files (D20, 2026-10-19)
+Accepted scope: `docs/README.md` index (folder purpose, read-first order, writer); frontmatter `status`/`updated`/`supersedes` on decisions, designs, reports; decisions split into `docs/decisions/DEC-NNNN-<slug>.md` (T02 fields: context, decision, reason, impact, supersedes) with `0001-decision-log.md` kept as the index; superseded docs excluded from default reads; `check_docs_drift.py` validates frontmatter and supersedes links; Vault records (E7) use the same format; init ships the same index/format (WO-0010). Orchestrator migrates this repo's DEC-0001..0014.
+
+### A1: how every caller reaches `mesh` (Open Question 1)
+Finding: A1, P1, confidence 9/10, `docs/designs/pm-led-onboarding.md` Open Question 1 "How the skills reach `mesh`" — lead panes and Monitor shells have no `${CLAUDE_PLUGIN_ROOT}` — reviewer: plan-eng-review Section 1.
+State: approved
+Actual answer: A — project launcher `.mesh/bin/mesh` (D21, 2026-10-19)
+Accepted scope: `mesh init` writes `.mesh/bin/mesh` (POSIX sh) that resolves the currently installed plugin root from `~/.claude/plugins/installed_plugins.json` at every call and execs its `bin/mesh`; FAIL with a reinstall fix if not found; skills, lead orders and the Monitor watch command all use `.mesh/bin/mesh`; tests for resolution after a version change and for a missing install; closes Open Question 1.
+
+### A2: state.json schema version
+Finding: A2, P2, confidence 8/10, design E1/E2 define `.mesh/state.json` without a version field — reviewer: plan-eng-review Section 1.
+State: approved
+Actual answer: A — schema_version + migration (D22, 2026-10-19)
+Accepted scope: `schema_version` in state.json; older versions are backed up then migrated by `mesh/state.py`; an unknown newer version is read-only and every write is refused with a plugin-update fix; tests per migration step and for the newer-version refusal.
+
+### Q1: config format vs Python floor
+Finding: Q1, P1, confidence 9/10, design E1 "`mesh init` creates ... `.mesh/config.toml`" vs `README.md:10` "python3 >= 3.10, stdlib only"; `tomllib` is 3.11+ and the stdlib has no TOML writer — reviewer: plan-eng-review Section 2.
+State: approved
+Actual answer: B — keep TOML, raise the floor to Python 3.11 (D23, 2026-10-19)
+Accepted scope: minimum Python becomes 3.11 everywhere: `bin/mesh` and `.mesh/bin/mesh` launcher version checks, README prerequisites and install commands (Ubuntu 22.04 ships 3.10: point to deadsnakes `python3.11`+ or pyenv), `pyproject.toml` requires-python and ruff/mypy targets, design §1. TOML writes stay safe without a writer library: `mesh init` copies a template config only when the file is absent and otherwise appends missing keys as plain lines under a marker comment; it never rewrites existing lines; tests for absent, partial and user-edited configs. Supersedes the 3.10 text that WO-0008 put in README.
+
+### T1: regression contract for the scaffold.py / slack_bridge.py moves
+Finding: T1, P1 (CRITICAL regression risk), confidence 9/10, `tests/test_scaffold*.py`, `tests/test_slack*.py` (~49 cases) cover code that WO-0010 and D11 move into `mesh/` — reviewer: plan-eng-review Section 3.
+State: approved
+Actual answer: B — rewrite the tests for the new structure (D24, 2026-10-19)
+Accepted scope: tests are rewritten against `mesh/init.py` and `mesh/slack.py`. Behaviors to preserve (contract, unchanged): idempotent create/merge/skip, never overwrite user content, secret/.env/token refusal in send, allowlist required, thread replies, restart resume with backlog cap, no partial state commit. Intended differences only: Python 3.11 floor (D23), Slack watcher creates work items (D12). Residual risk recorded: assertions may weaken during the rewrite; the old test files are deleted only in the same change that adds their rewritten equivalents.
+
+## Outside voice (Codex, gpt-6-astra, plan-review, 2026-10-19) — 9 findings, all accepted as valid by the parent reviewer
+
+### O1: bootstrap circularity: skills call `.mesh/bin/mesh` that only init creates; preflight fails on unconfigured Slack before init can configure it
+Finding: O1, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — apply (D26, 2026-10-19)
+Accepted scope: Skills call `${CLAUDE_PLUGIN_ROOT}/bin/mesh`; `.mesh/bin/mesh` (D21) is for lead panes and the Monitor watch only. Preflight splits into bootstrap checks (projmux, managed pane, registered root, Python) run before init, and readiness checks (Slack configured or recorded opt-out, launcher present) run after init; tests for a fresh repo reaching init.
+
+### O2: recording verification writes `.mesh/state.json` and the tracker, which the worktree fingerprint covers, so evidence invalidates itself; later work also invalidates earlier verified items
+Finding: O2, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — apply (D27, 2026-10-19)
+Accepted scope: Fingerprint excludes mesh-owned paths (`.mesh/`, `docs/tracker.md`); `verified` is a historical record of that attempt; current-tree validity is re-checked once by the integration gate before ship (`mesh work revalidate --all`); D13 semantics documented; tests for a verify write not invalidating itself and for a later edit flagged by revalidate.
+
+### O3: no before/after comparison: tests may run on one tree version while evidence records another
+Finding: O3, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — before/after fingerprint comparison (D28, 2026-10-19)
+Accepted scope: `mesh work verify` computes the fingerprint before and after running the commands; on mismatch the attempt is recorded as `inputs_changed` and cannot reach `verified`; test with an edit injected during a verify run.
+
+### O4: operator-only override checks the PM pane, but the PM model runs in that pane, so the model can bypass every guard
+Finding: O4, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — host ask rule (D29, 2026-10-19; amends D14)
+Accepted scope: `mesh init` adds a `permissions.ask` rule for the override command (both `${CLAUDE_PLUGIN_ROOT}/bin/mesh work override` and `.mesh/bin/mesh work override` forms) to the project `.claude/settings.json`, so the host always prompts the operator; the pane check of D14 stays as a second guard; docs state the limit honestly (enforced by the host, bypassable by editing settings; no override while the operator is away); test that init writes the rule and that override logs actor, reason and approval.
+
+### O5: legacy tracker import has no semantic mapping for closed/pass/n/a rows lacking contracts, attempts and evidence
+Finding: O5, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: C then A — investigated (D30), then plugin-format-only legacy import (D31, 2026-10-19)
+Accepted scope: Investigation (read-only): this repo uses the 6-column table with mixed status words; another local project (A) uses a different table (step|content|commit) with Korean statuses; another local project (B) has no tracker table within depth 4. Decision: only the plugin's 6-column tracker is imported, as state `legacy` (original status text kept, marked no evidence; a legacy closed/pass satisfies depends but is flagged in the view); any other tracker format is left untouched and recorded in WO-0001 as 'external tracker at <path>, not imported'; WO-0001 n/a/closed become a `bootstrap` field (not_applicable|closed); tests for this repo's tracker, a foreign-format file, and depends on legacy rows.
+
+O5 revision (operator message, 2026-10-19, supersedes the 'not imported' part of D31): every existing tracker found by init, whatever its format, is imported as `legacy` and normalised into the standard tracker format for consistency. Status mapping to the standard vocabulary only when unambiguous (Korean and English words for done or a check mark -> closed, in progress -> dispatched, waiting/pending -> open, PASS/FAIL -> pass/fail); anything else keeps its raw text with status `legacy`; never `verified`. Columns map by header name (id/title/role/depends/status/report, including Korean header equivalents such as step/content), missing columns stay empty. The original file is never modified; the import shows the mapping (dry-run) and the PM confirms before writing, the same pattern as init.
+
+### O6: atomic JSON writes do not cover external effects (watcher notify, dispatch send, Vault commit); crash between state write and effect is unrecoverable
+Finding: O6, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — pending actions (D32, 2026-10-19)
+Accepted scope: External effects (PM notify line, projmux dispatch send, Vault commit, Slack post) are written to state.json as pending actions before execution and marked done after; on start, mesh replays undone actions (notify/Vault/Slack are idempotent by key; dispatch uses projmux --message-ref so a replay does not send twice); tests kill the process between state write and effect and assert exactly-once outcome.
+
+### O7: Slack thread follow TTL 24h and 1h replay cap (`templates/slack/slack_bridge.py:312`) drop operator answers to long awaiting_user waits
+Finding: O7, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — follow threads of unfinished work without a time limit (D33, 2026-10-19)
+Accepted scope: Threads mapped to a work item that is not closed/cancelled are followed with no TTL (from state.json); threads of finished items keep the 24 h rule; the 1 h replay cap applies only to new top-level requests; stale open threads are checked on a slower cadence; test: a reply 72 h later resumes an awaiting_user item.
+
+### O8: appending TOML keys after a table header lands them inside that table; reopening tables can make invalid TOML
+Finding: O8, Medium, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — append whole missing tables only, report missing keys (D34, 2026-10-19; amends D23 merge rule)
+Accepted scope: init appends only whole missing tables at end of file; missing keys inside existing tables are never auto-inserted and are reported as 'add manually: <table>.<key>'; after any write the file is re-read with tomllib and the write is rolled back if invalid; tests for absent file, missing table, missing key in an existing table, and a user-edited file.
+
+### O9: WO-0009..0015 and the WO-0014 gate still target the smaller product, not E2-E9 and the stage-1 request-to-report flow
+Finding: O9, High, reviewer: Codex outside voice (cross-model; parent agrees).
+State: approved
+Actual answer: A — rewrite work orders + stage-1 flow release gate (D35, 2026-10-19)
+Accepted scope: After this review the orchestrator rewrites WO-0009 onward: one WO per module group with a layer-ordered depends graph and parallel batches; each WO's acceptance scope lists the decision IDs it implements; the release gate (QA E2E) requires the stage-1 flow from the test plan (Slack request -> contract -> dispatch -> precheck -> run -> verify -> fail -> reassign -> pass -> Slack report) on the test project, with captured evidence.
+
+## Conformance check (operator request, 2026-10-19)
+Factual correction (no behavior change, no question): layer labels. Layer 4 (execution link) is `mesh/projmux.py` only; `dispatch.py`, `spawn.py`, `init.py` are layer 3 rule checks that call layer 4. The D16 contract order (cli|slack -> dispatch|spawn|init -> state -> projmux|docs|vault) is unchanged; the E9 draft text that put spawn/dispatch in layer 4 is superseded by this line.
+
+### V1: which role may run which `mesh work` verb
+Finding: V1, P1, confidence 9/10, design E2 lists guarded verbs but no caller rule; the single-writer principle (AGENTS.md "Coordination docs (single owner)") holds only at file level — reviewer: plan-eng-review conformance check.
+State: approved
+Actual answer: A — role permission table (D36, 2026-10-19)
+Accepted scope: mesh resolves the caller agent's projmux role label (via mesh/projmux.py identity) and checks a permission table in mesh/state.py: pm = new, ready, assign, dispatch, reassign, close, cancel; lead = start, submit, verify, fail on items assigned to its own role; slack watcher = create draft, attach reply; override = operator only (ask rule, D29). Refusals are recorded with caller, verb and reason. Docs state the limit (enforced by mesh and projmux labels; changing local settings or labels can bypass). Tests per role and verb incl. a lead closing its own item (refused).
+
+### V2: is `.mesh/state.json` committed to git
+Finding: V2, P1, confidence 9/10, design E1/E1b define `.mesh/state.json` but not its git status; `docs/tracker.md` (its view) is committed today — reviewer: plan-eng-review conformance check.
+State: approved
+Actual answer: A — commit state.json with the tracker view (D37, 2026-10-19)
+Accepted scope: .mesh/state.json and docs/tracker.md are committed together by the Ship role; lock files, state backups (schema migration) and temp files under .mesh/ are gitignored by init; stage 1 assumes one machine writes state (multi-machine merge is stage 2); test that init writes the ignore lines and that the view regenerates from state.json.
+
+## Eng Review round 2 — outputs (2026-10-19)
+
+Approval readiness: PASS — every accepted remedy cites its own answer: D9-D24 (scope, structure, F1-F5, G1-G5, A1-A2, Q1, T1), D25 (Codex re-run, done), D26-D35 (O1-O9; O5 via D30 investigate, D31 + operator revision), D36-D37 (V1-V2). No pending records.
+
+### NOT in scope (stage 2+)
+- LangGraph engine (DEC-0010: evaluate in stage 2 behind the state interface).
+- Multi-machine concurrent state writes (V2 assumes one writer machine in stage 1).
+- Role-specific context assembly beyond the work contract's read set (08-Context, stage 2).
+- Shared common block for pm-orchestrator / scope-mapper (D18 kept separate; reopen on drift).
+- Automatic policy promotion from experience (never automatic, D07).
+
+### What already exists (reuse)
+- `skills/init/scaffold.py` — idempotent create/merge/skip engine; moves under `mesh/init.py` with a compatibility wrapper (WO-0010).
+- `templates/slack/slack_bridge.py` — security-reviewed bridge (WO-0005-S PASS); becomes `mesh/slack.py` (D11).
+- `scripts/gc/*`, `scripts/audit.sh`, `scripts/scrub.sh`, `make check` — gates extended, not replaced (D19).
+- `templates/agents/role-lead.md` stamping + byte-compare test — kept for role leads (D18).
+- projmux: agent create/message/describe, labels, `--message-ref` — used, never reimplemented.
+
+### Stage-1 flow (target)
+```
+Slack top-level msg ─► mesh slack watch ─(lock, dedup ts)─► state: draft W ─pending action─► PM notified (id W)
+PM: ready W (contract) ─► assign role ─► mesh dispatch W ─(row/role/bootstrap checks)─► projmux send (--message-ref)
+lead: start W ─► worker implements ─► lead: mesh work verify W (fingerprint before/after, cmds run by mesh)
+   ├─ pass ─► verified(attempt) ─► PM close ─► Slack thread result ─► [stage 2, R1] Vault record commit (path only)
+   └─ fail ─► rework(failure record) ─► PM reassign (retry limit → blocked + Slack question, awaiting_user)
+integration gate: mesh work revalidate --all + make check + E2E ─► Ship commits state.json + tracker view
+```
+
+### Failure modes
+| path | realistic failure | handling (decision) | test | silent? |
+|---|---|---|---|---|
+| first /pm | launcher missing before init | skills use plugin path (D26) | fresh-repo test | no |
+| Slack inbound | crash after state write, before notify | pending action replay (D32) | kill-between test | no |
+| Slack reply | answer after 72 h | open-work threads untracked by TTL (D33) | 72 h test | no |
+| verify | edit during run | before/after fingerprint → inputs_changed (D28) | injected edit | no |
+| verify | own state write changes fingerprint | mesh-owned paths excluded (D27) | verify-write test | no |
+| dispatch | duplicate send on replay | projmux --message-ref (D32) | replay test | no |
+| override | model bypasses guards | host ask rule + pane check (D29) | init writes rule | no (honest limit documented) |
+| lead | closes own item | role permission table (D36) | per-role tests | no |
+| init | config merge breaks TOML | whole tables only + tomllib re-read (D34) | TOML cases | no |
+| upgrade | new plugin, old state | schema_version + migration (D22) | migration tests | no |
+| import | foreign tracker misread | legacy + preview confirm, never verified (O5 revision) | foreign-format test | no |
+Critical gaps (no test AND no handling AND silent): 0.
+
+### Worktree parallelization strategy
+| Step | Modules touched | Depends on |
+|---|---|---|
+| W1 skeleton | bin/, mesh/cli, mesh/projmux, mesh/docs, .importlinter, naming GC | — |
+| W2 state engine | mesh/state (guards, attempts, pending actions, schema, permissions, override) | W1 |
+| W3 init + layout | mesh/init, templates/ (E1b, G2 folder files, TOML, legacy import) | W1 |
+| W4 slack | mesh/slack (bridge move, work linkage, open-thread follow) | W2 |
+| W5 spawn + dispatch | mesh/spawn, mesh/dispatch (verify, fingerprint, message-ref) | W2 |
+| W6 vault | mesh/vault | W2 |
+| W7 skills + PM | skills/, agents/pm-orchestrator.md, docs/ index + DEC split | W3, W4, W5 |
+| W8 gate | tests E2E, release | W6, W7 |
+Lane A: W1 → W2 → (W4 ∥ W5 ∥ W6). Lane B: W3 after W1, parallel with W2. Merge W3-W6, integration gate, then W7, then W8.
+Conflict flags: mesh/cli.py registers all subcommands in W1 (later lanes never edit it); mesh/state.py is shared by W4-W6 (call its public API only).
+
+### Implementation Tasks
+- [ ] **T1 (P1, human ~1 d / CC ~40 min)** — mesh skeleton — sh launchers (plugin + .mesh/bin, 3.11 gate), cli with all subcommands, projmux identity/registered-root/-p/agent match, docs parsers, layers contract
+  - Surfaced by: D16, D21, D23, D26, C1, C2, A1
+  - Files: bin/mesh, mesh/cli.py, mesh/projmux.py, mesh/docs.py, .importlinter, pyproject.toml
+  - Verify: make check (lint-imports, unit tests with fake projmux)
+- [ ] **T2 (P1, human ~2 d / CC ~1.5 h)** — state engine — guards, attempts, retry limit, evidence fingerprint rules, pending actions, schema_version, role permissions, override
+  - Surfaced by: E2, D13, D14, D22, D27, D28, D29, D32, D36, D37
+  - Files: mesh/state.py, tests
+  - Verify: unit tests per transition, kill-between, migration, permission matrix
+- [ ] **T3 (P1, human ~1.5 d / CC ~1 h)** — init + standard layout — scaffold move, .mesh/, launcher, ask rule, TOML tables, legacy import with preview, folder AGENTS.md pairs, naming table
+  - Surfaced by: E1, E1b, G2, G4, D24, D30-D31, D34, O5 revision
+  - Files: mesh/init.py, skills/init/scaffold.py (wrapper), templates/
+  - Verify: rewritten scaffold tests (contract list in T1 record), fresh/partial/foreign repos
+- [ ] **T4 (P1, human ~1 d / CC ~40 min)** — slack — bridge move, watcher creates/attaches work, open-thread follow, outbox send
+  - Surfaced by: D11, D12, D33, E8
+  - Files: mesh/slack.py, skills/slack-setup/SKILL.md
+  - Verify: rewritten slack tests + live E2E
+- [ ] **T5 (P1, human ~1 d / CC ~40 min)** — spawn + dispatch + verify — profiles, matching, message-ref, verify runner
+  - Surfaced by: D2, E5, E6, D28, D32
+  - Files: mesh/spawn.py, mesh/dispatch.py
+  - Verify: fake projmux tests + live dispatch
+- [ ] **T6 (P2, human ~0.5 d / CC ~20 min)** — vault — record write, hash check, path-only commit, init git check
+  - Surfaced by: E7, D15
+  - Files: mesh/vault.py
+  - Verify: temp git repo tests
+- [ ] **T7 (P2, human ~1 d / CC ~30 min)** — skills, PM role, docs index, DEC split, frontmatter
+  - Surfaced by: §5, G5, D17, D19, D20
+  - Files: skills/*, agents/pm-orchestrator.md, docs/
+  - Verify: make check (doc drift incl. frontmatter + Inherits)
+- [ ] **T8 (P1, human ~1 d / CC ~40 min)** — release gate — stage-1 flow E2E on the test project, 0.2.0
+  - Surfaced by: D35, test plan
+  - Files: tests/, docs/reports/
+  - Verify: captured E2E evidence, make check exit 0
+
+### Unresolved decisions
+None.
+
+### Completion summary
+- Step 0: Scope Challenge — scope accepted as-is (D9 kept E7; D10 original arrangement)
+- Reality rows: 7/7 emitted, 1 unverified premise (resolved: Codex auth repaired, outside voice completed)
+- Architecture Review: 4 issues found (A1, A2, V1, V2) + 1 factual label correction
+- Code Quality Review: 1 issue found (Q1)
+- Test Review: diagram produced, ~30 planned-path gaps + 1 regression contract (T1, D24)
+- Performance Review: 0 issues found
+- NOT in scope: written
+- What already exists: written
+- TODOS.md updates: 1 item proposed (Codex re-run) — chosen "build now" (D25), done
+- Failure modes: 0 critical gaps flagged
+- Unresolved decisions: 0 in this review
+- Outside voice: codex (gpt-6-astra, plan-review) completed — 9 findings, all accepted (O1-O9)
+- Parallelization: 8 steps, 2 lanes, W4/W5/W6 parallel after W2; W3 parallel with W2
+- Lake Score: [estimated] most scored answers picked the 10/10 option; exceptions D18, D23, D24
+
+## CEO Review (/plan-ceo-review, 2026-10-19) — mode SCOPE REDUCTION (D38, operator answer)
+Stage-1 core kept without question: E1, launchers (D21, D26), E2 with D27/D28/D36, E3, E4 + D33, E6, E8, D32, D22, G1.
+
+| ID | Proposal | Decision | Answer |
+|---|---|---|---|
+| R1 | E7 Vault records -> stage 2 | DEFERRED (D15/DEC-0011 kept; implementation moves to stage 2; PM updates the Vault by hand meanwhile) | D39.1 A |
+| R2 | G2 folder instruction files -> stage 2 | KEPT in stage 1 (D17 stands) | D39.2 B |
+| R3 | G5 docs index, frontmatter, DEC split -> stage 2 | DEFERRED with E7 (D20 kept; implementation moves to stage 2) | D39.3 A |
+| R4 | G4 naming table + vulture GC -> stage 2 | KEPT in stage 1 (D19 stands) | D39.4 B |
+| R5 | E5 role profiles (projmux --profile, model/effort) -> stage 2 | DEFERRED (D36 role permission table stays in stage 1; dispatch precheck has no profile check in stage 1) | D39.5 A |
+
+### Flow conformance (operator request): scope vs knowledge-bundle 05 minimal workflow and 02 integrated target flow
+05 minimal workflow: covered except failure classes and two return branches (W1) and new feedback after close (W2). 02 integrated flow: memory lookup (K -> C) is stage 2 (NOT in scope), memory write (R -> K) is stage 2 by R1, improvement loop (K -> Q -> I) is stage 3; procedure-by-task-type (09) is missing (W3).
+
+#### W1: failure classes and return branches
+Finding: W1, P1, confidence 9/10, knowledge 05 failure table (five classes) vs design E2 (class field without values, blocked release only for awaiting_user). Correction: G->A and G->C are not missing transitions; knowledge 05 routes them through rework -> ready and progress -> blocked — reviewer: plan-ceo-review flow check.
+State: approved
+Actual answer: A — five-class enum with code-enforced routes (D40, 2026-10-19)
+Accepted scope: E2 class enum + per-class guards (contract version bump, environment unblock without retry use) + one test per class; folded into T2.
+
+#### W2: new feedback on a closed item
+Finding: W2, P2, confidence 8/10, knowledge 05 edge F -> A vs design E4/D33 (closed threads followed 24 h, no rule) — reviewer: plan-ceo-review flow check.
+State: approved
+Actual answer: A — new draft linked by follows (D41, 2026-10-19)
+Accepted scope: E4 rule above; one test (reply on a verified item's thread within 24 h creates a linked draft, original evidence unchanged); folded into T4 (Slack linkage).
+
+#### W3: task-type procedure in the work contract
+Finding: W3, P2, confidence 8/10, knowledge 09 procedure table (required inputs and evidence per task type) and 02 node C vs design E2 contract (read set only) — reviewer: plan-ceo-review flow check.
+State: approved
+Actual answer: A — task type with required inputs and evidence guards (D42, 2026-10-19)
+Accepted scope: contract `type` (6 values), per-type required input keys and evidence kinds as config.toml defaults, presence-only guards on ready and verified, one test per type; folded into T2 (guards) and T3 (init writes the defaults).
+
+#### B1: no baseline for operational effect
+Finding: B1, P2, confidence 8/10, knowledge 12 sec. 7 (record a baseline before comparing effect) vs design Success Criteria (no measurement) — reviewer: plan-ceo-review premise check 0A.
+State: approved
+Actual answer: A — baseline + `mesh status --metrics` + release-gate comparison (D43, 2026-10-19)
+Accepted scope: one-time baseline from docs/tracker.md WO-0001..0015 and docs/reports; metrics computed from existing state.json records (attempts, failure class, override, awaiting_user, follows); comparison in the T8 report; no new data collection. Folded into T5 (status) and T8.
+
+#### E-1: environment unblock has no bound and no notification
+Finding: E-1, P1, confidence 9/10, Section 2 error map: D40 environment route (no retry use) allows unbounded unblock loops and a silent blocked state — reviewer: plan-ceo-review Section 2.
+State: approved
+Actual answer: A — separate limit + notification + precheck-gated ready (D44, 2026-10-19)
+Accepted scope: E2 environment route text above; tests: limit exceeded -> blocked(limit) + Slack question; entering blocked(environment) records a notify pending action. Folded into T2.
+
+#### Consequential corrections (no new choice; follow from recorded answers)
+- R1 (D39.1 A): Vault path optional in config.toml for stage 1; the flow diagram marks the Vault commit as stage 2; D32 pending actions in stage 1 are PM notify, projmux dispatch send and Slack post (Vault commit joins in stage 2); T6 moves to stage 2.
+- R3 (D39.3 A): T7 keeps skills, PM role, folder AGENTS.md/CLAUDE.md pairs (R2) and naming (R4); docs index, DEC split and frontmatter move to stage 2.
+- R5 (D39.5 A): T5 drops projmux profiles; spawn uses the default model; D36 role permissions stay in T2.
+- D41 mechanics: after a follow-up draft is created, the thread maps to it (E4 attach rule), so a burst of replies yields one draft.
+- Success Criteria: python floor corrected to 3.11 (D23).
+
+### Outside voice (Codex gpt-6-astra, CEO review, 2026-10-19) — 7 findings, all verified against the plan and `templates/slack/slack_bridge.py`
+
+#### X7 (Codex #7, Medium): G4 naming enforces `DEC-NNNN-<slug>.md` while R3 defers the split
+Factual correction, no new choice: the DEC file-name rule belongs to the split itself, so it moves to stage 2 with R3 (D39.3); every other G4 rule (D19, D39.4) stays in stage 1.
+
+#### X1 (Codex #1, High): recovery verbs have no caller; E4 reply resume contradicts D40
+State: approved
+Actual answer: A — single transition table (D45, 2026-10-19)
+Accepted scope: one table in mesh/state.py (verb x caller x source state x guard x retry accounting), printed in the design; `unblock` is PM-only; when the assigned lead is absent or dead the PM may record `fail --class environment`; a Slack reply on a blocked(awaiting_user) item attaches and notifies the PM and never releases the block (the PM releases it through the class guard); a test walks every verb x caller. Supersedes the E4 sentence "resumes when a thread reply arrives". Folded into T2/T4.
+
+#### X2 (Codex #2, High): bugfix failing-before evidence is never captured
+State: approved
+Actual answer: A — mesh runs the repro at ready (D46, 2026-10-19)
+Accepted scope: for `bugfix`, the contract's `repro` is an executable command; the `ready` guard runs it at the base commit and records the failure on the item (item-scoped, so it stays valid across reassignment); a passing repro refuses `ready` (not reproduced); `verified` requires the same repro passing plus the regression commands; a bug that cannot be reproduced by command needs an operator override (D14/D29). Other types keep presence-only checks (D42). Tests: repro passes at ready -> refused; repro fails at ready then passes at verify -> verified; reassignment keeps the failing-before record. Folded into T2/T5.
+
+#### X3 (Codex #3, High): verification does not bind the acceptance policy
+State: approved
+Actual answer: A — snapshot contract version and effective verification config hash per attempt (D47, 2026-10-19)
+Accepted scope: `start` records the contract version and a hash of the effective verification config (commands + per-type required evidence); `verify` recomputes it and a mismatch is `inputs_changed` (D28 path); `verified` keeps both so `revalidate` (D27) can compare; the file fingerprint rule of D27 is unchanged. Tests: config edited between start and verify -> inputs_changed; verified record carries both values. Folded into T2.
+
+#### X4 (Codex #4, High): D32 claims Slack posts are idempotent by key; the bridge sends no key
+State: approved
+Actual answer: B — at-least-once, stated (D48, 2026-10-19)
+Accepted scope: D32 is corrected: Slack posts are at-least-once, not idempotent. Each post carries its stable `action_id` (work id + action) in the text so a duplicate after a crash between post and `done` is identifiable; the docs state the guarantee. Test: crash after post before done -> replay posts again with the same action_id. Ceiling: rare duplicate reports; upgrade to metadata + thread check (D48 option A) if duplicates are seen in live use. Folded into T4.
+
+#### X5 (Codex #5, Medium): verification treated as closure; `close` had no state
+State: approved
+Actual answer: A — add `closed` (D49, 2026-10-19)
+Accepted scope: E2 adds `closed` (verified -> closed, PM only, the completion boundary); a thread reply before closure attaches and blocks `close` until the PM acknowledges it; after closure D41 applies (new draft + follows); D33 "finished" means closed or cancelled; the D45 transition table includes these rows. Tests: reply on verified item -> close refused until acknowledged; reply on closed item -> linked draft. Folded into T2/T4.
+
+#### X6 (Codex #6, Medium): D43 baseline compares incomparable data
+State: approved (reopens D43 on new evidence: WO-0009..0015 are queued; the tracker holds final statuses only)
+Actual answer: A — restrict scope and label as indicative (D50, 2026-10-19)
+Accepted scope: baseline from finished legacy items only; only counters defined the same way on both sides (rework count per item, PASS reversals); override/awaiting_user/follows counts are printed by `mesh status --metrics` but not compared; T8 labels the comparison indicative and does not gate on it. Supersedes the D43 accepted scope above.
+
+### Cross-model tension
+Codex (gpt-6-astra) and the native review agree on the gaps (W1-W3, E-1 were native; X1-X7 Codex). They differ on scope: Codex recommended cutting the D42 type guards and the D43 comparison; the operator kept both with corrections (D46, D50). Codex's D32 finding led to a weaker, honest guarantee (D48 B, at-least-once).
+
+### Approval readiness
+Approval readiness: PASS — mode D38; scope rows R1 (D39.1 A), R2 (D39.2 B), R3 (D39.3 A), R4 (D39.4 B), R5 (D39.5 A); remedies W1 (D40 A), W2 (D41 A), W3 (D42 A), B1 (D43 A, revised by X6 D50 A), E-1 (D44 A), X1 (D45 A), X2 (D46 A), X3 (D47 A), X4 (D48 B), X5 (D49 A); X7 factual correction (follows D39.3). No pending rows.
+
+### CEO review outputs (2026-10-19)
+
+**Reality rows**
+- REALITY: premise-table finding 6 premises, unverified=1 resolved by D43/D50 (baseline) docs/designs/pm-led-onboarding.md:175
+- REALITY: already-done pass HEAD b656008 has no mesh/ code docs/tracker.md
+- REALITY: surface-check pass projmux flags verified in eng review; Slack metadata option not adopted (D48 B) templates/slack/slack_bridge.py:192
+- REALITY: binding-decisions pass DEC-0009..0014 and D9-D37 honored; D43 reopened only on new evidence (D50) docs/decisions/0001-decision-log.md:6
+- REALITY: numbers finding effort figures are estimates; baseline sample about 8 finished items docs/tracker.md:14
+- REALITY: deferred-asks pass stage-2 list below docs/designs/pm-led-onboarding.md:746
+- REALITY: pr-count pass one release (T8) docs/designs/pm-led-onboarding.md:618
+- PLAN_REALITY: phase=ceo rows=7/7 missing=none unverified=1 verdict=complete (the unverified premise is operational effect, measured only after stage 1 per D50)
+
+**NOT in scope (stage 2, deferred by the operator; tracked as stage-2 rows when the work orders are rewritten; this repo keeps deferrals in docs/tracker.md, not TODOS.md)**
+- E7 Vault records (R1, D39.1): implementation of D15/DEC-0011 moves to stage 2; the PM updates the Vault by hand meanwhile.
+- G5 docs index, frontmatter, DEC split (R3, D39.3), including the `DEC-NNNN-<slug>.md` name rule (X7).
+- E5 role profiles (R5, D39.5): spawn uses the default model.
+- Slack metadata dedup (D48 option A): upgrade trigger = duplicates seen in live use.
+- Rejected: none.
+
+**What already exists (reused)**
+- `skills/init/scaffold.py` (moves under mesh/init, D24 contract), `templates/slack/slack_bridge.py` (moves to mesh/slack, D11), `scripts/audit.sh` + GC (make check gate), projmux labels/`--message-ref`, Claude Code ask rules (D29), the legacy tracker (O5 import, also the D50 baseline source).
+
+**Dream state delta**
+After stage 1: one real flow runs end to end with code-enforced transitions, typed contracts, failure classes and indicative metrics. Still missing toward the 12-month ideal: Vault memory and role context (stage 2), rule improvement from failure records (stage 3), per-role models (stage 2).
+
+**Error and rescue registry (new codepaths from this review)**
+
+| codepath | what can go wrong | rescued | action | user sees |
+|---|---|---|---|---|
+| `unblock` | environment still broken | Y | precheck refuses; env counter; over limit -> blocked(limit) | Slack question in the thread |
+| `fail --class environment` by PM | lead pane dead | Y | PM records failure (D45) | thread notice with cause |
+| `ready` (bugfix) | repro passes at base | Y | refused: not reproduced | PM sees refusal reason |
+| `ready` (bugfix) | repro cannot be a command | Y | operator override (D14/D29) | override recorded |
+| `verify` | config or contract changed since start | Y | refused: inputs_changed | lead re-runs after re-start |
+| `close` | unacknowledged reply | Y | refused until `ack` | PM sees pending replies |
+| Slack post replay | crash between post and done | partial (accepted) | re-post with same action_id | rare visible duplicate |
+| `attach` on blocked(awaiting_user) | reply treated as release | Y | attach + notify only | PM releases via class guard |
+| follow-up burst | many replies after close | Y | thread remapped to the new draft | one follow-up item |
+| `mesh status --metrics` | legacy items lack history | Y | only comparable counters, labelled indicative | "indicative, small sample" |
+
+**Failure modes registry**
+
+| codepath | failure mode | rescued | test | user sees | logged |
+|---|---|---|---|---|---|
+| unblock loop | infinite environment retries | Y | Y (limit) | Slack question | Y |
+| blocked(environment) | silent stop | Y | Y (notify action) | thread notice | Y |
+| awaiting_user | reply bypasses contract revision | Y | Y (table walk) | PM notice | Y |
+| bugfix evidence | fake failing-before | Y | Y | refusal | Y |
+| acceptance policy | weakened commands mid-verify | Y | Y | inputs_changed | Y |
+| completion | objection after verify ignored | Y | Y | close refused | Y |
+| Slack replay | duplicate report | accepted | Y | duplicate with action_id | Y |
+| metrics | misleading comparison | Y | Y | indicative label | Y |
+
+Critical gaps: 0.
+
+**Diagrams**
+- State machine: E2 transition table (above) plus:
+```
+ draft ─ready─► ready ─start─► running ─submit─► verifying ─verify─► verified ─close─► closed
+   ▲              ▲  ▲                 │fail            │fail             │ack (replies)
+   │              │  └──reassign── rework ◄─(defect,conflict)            
+   │              ├──ready (revised)── blocked(awaiting_user) ◄─(ambiguity)
+   │              └──unblock (precheck)── blocked(environment) ─(env limit)─► blocked(limit)
+ closed thread reply ─► new draft (follows)            any except closed ─cancel─► cancelled
+```
+- Stale diagram audit: the stage-1 flow diagram in "Eng Review round 2 — outputs" stays accurate for the happy path and was updated for R1 (Vault step marked stage 2); its fail branch is a summary, and the transition table is authoritative.
+
+**Implementation task amendments (to the T1-T8 list above; the work-order rewrite uses this)**
+- [ ] T2 (+ human ~1.5 d / CC ~1 h) — state engine — transition table (D45), `closed` (D49), failure classes and routes (D40), environment limit + notify (D44), type guards (D42), bugfix repro at ready (D46), contract/config hash per attempt (D47). Verify: table-walk test, per-class and per-type tests.
+- [ ] T3 (+ human ~2 h / CC ~10 min) — init — config.toml type defaults (D42), environment limit, Vault path optional (R1). Verify: init tests.
+- [ ] T4 (+ human ~3 h / CC ~15 min) — slack — attach-only on awaiting_user (D45), pre-close attach and follow-up drafts (D41/D49), action_id in posts, at-least-once doc (D48). Verify: slack tests incl. crash-after-post.
+- [ ] T5 (- profiles, + metrics, human ~3 h / CC ~15 min) — drop projmux profiles (R5); `mesh status --metrics` (D43/D50). Verify: metrics test on a fixture state.
+- [ ] T6 — moved to stage 2 (R1).
+- [ ] T7 — drop docs index, DEC split and frontmatter (R3); keep folder instruction pairs (R2) and naming without the DEC rule (R4, X7).
+- [ ] T8 — release report adds the indicative baseline comparison (D50).
+
+**Completion summary**
+```
+  +====================================================================+
+  |            MEGA PLAN REVIEW — COMPLETION SUMMARY                   |
+  +====================================================================+
+  | Mode selected        | SCOPE REDUCTION                             |
+  | System Audit         | no mesh code yet; design drifted on 3.10    |
+  | Step 0               | 3 deferrals (R1,R3,R5), 2 keeps (R2,R4)     |
+  | Section 1  (Arch)    | 1 issue (R1 consequences, corrected)        |
+  | Section 2  (Errors)  | 10 error paths mapped, 1 GAP (E-1, fixed)   |
+  | Section 3  (Security)| 0 issues found, 0 High severity             |
+  | Section 4  (Data/UX) | 2 edge cases mapped, 0 unhandled            |
+  | Section 5  (Quality) | 0 issues found                              |
+  | Section 6  (Tests)   | Diagram produced, 0 gaps                    |
+  | Section 7  (Perf)    | 0 issues found                              |
+  | Section 8  (Observ)  | 1 gap found (environment notify, fixed)     |
+  | Section 9  (Deploy)  | 0 risks flagged                             |
+  | Section 10 (Future)  | Reversibility: 4/5, debt items: 4           |
+  | Section 11 (Design)  | SKIPPED (no UI scope)                       |
+  +--------------------------------------------------------------------+
+  | NOT in scope         | written (4 items)                           |
+  | What already exists  | written                                     |
+  | Dream state delta    | written                                     |
+  | Error/rescue registry| 10 rows, 0 CRITICAL GAPS                    |
+  | Failure modes        | 8 total, 0 CRITICAL GAPS                    |
+  | TODOS.md updates     | 0 (deferrals go to docs/tracker.md)         |
+  | Scope proposals      | 0 proposed, 0 accepted (REDUCTION mode)     |
+  | CEO plan             | skipped by mode                             |
+  | Outside voice        | codex completed, 7 findings, 7 resolved     |
+  | Lake Score           | 4/4 recommendations chose complete option   |
+  | Diagrams produced    | 2 (state machine, flow conformance)         |
+  | Stale diagrams found | 1 (flow diagram Vault step, updated)        |
+  | Unresolved decisions | 0                                           |
+  | Reality rows         | 7/7 rows (PLAN_REALITY), 1 unverified       |
+  +====================================================================+
+```
 
 <!-- gstack:office-hours:concerns:start -->
 ## Reviewer Concerns
@@ -553,3 +1055,310 @@ issues verified: 2 of 2
 
 Verification is deterministic: a fix counts when its `applied_text` is in the current design and absent from the round-3 snapshot. It confirms applied edits, never a review verdict; no reviewer was launched past the cap.
 <!-- gstack:office-hours:concerns:end -->
+
+## Eng Review round 3 (/plan-eng-review, 2026-10-19) — target: E2 changes from the CEO review (D40-D50)
+
+Scope challenge: about 7 files [estimated: mesh/state.py, mesh/cli.py, mesh/slack.py, mesh/init.py, status output, 2 test files], 0 new classes; complexity gate not tripped; scope accepted as-is.
+
+- REALITY: premise-table pass 5 premises (table rows, D40-D50 answers) quoted from the design, unverified=0 docs/designs/pm-led-onboarding.md:248
+- REALITY: already-done pass no mesh/ code at HEAD b656008 docs/tracker.md:16
+- REALITY: surface-check pass verbs are new design surface, no existing CLI to verify docs/designs/pm-led-onboarding.md:246
+- REALITY: binding-decisions pass D40-D50 honored; no reopening docs/designs/pm-led-onboarding.md:642
+- REALITY: numbers pass file count marked estimated docs/designs/pm-led-onboarding.md:246
+- REALITY: deferred-asks pass no linked issue docs/designs/pm-led-onboarding.md:746
+- REALITY: pr-count pass one release (T8) docs/designs/pm-led-onboarding.md:618
+
+Factual correction (no behavior change): the `attach` row excluded only cancelled; D41/D49 already route replies on closed items to a new linked draft, so the row now reads "any except closed, cancelled".
+
+### E1: no exit from blocked(limit)
+Finding: E1, P1, confidence 9/10, docs/designs/pm-led-onboarding.md:257-258 ("over the limit -> blocked(limit) + Slack question"; no row has `blocked(limit)` as its source except cancel/override) — reviewer: plan-eng-review round 3.
+Plan baseline: D44/D45 route items to blocked(limit) and ask the user in Slack; no resume path was specified.
+Runtime evidence: none (no mesh code yet).
+Comparison grid:
+| commitment | current | A | B | C |
+|---|---|---|---|---|
+| exit from blocked(limit) | none (cancel/override only) | pm `ready` with revised contract (version +1) and the user's reply attached; retry and environment counters reset | pm `cancel`, then a new draft with follows | none |
+| structural test: every non-terminal state has an exit row | none | added | added | none |
+| other rows (D40-D49) | approved | unchanged | unchanged | unchanged |
+Question D52 (asked in Korean in chat; English rendering saved because the repo is English-only per scrub.sh):
+D52 — E1: how does an item leave blocked(limit)? Items over the retry or environment limit go to blocked(limit) with a Slack question (D44), but no table row leaves that state, so the PM cannot resume after the user answers (only cancel or operator override). Stakes: limit-hit items are effectively dead and routine resumes need override. Recommendation: A, resuming only with a revised contract (version +1) still blocks repeated identical retries while keeping one item's history; the structural test catches this class of gap. Completeness: A=10/10, B=8/10, C=3/10. Net: resume in place after a contract revision vs restart as a new item.
+Header: E1 limit exit
+Options:
+A) Resume after contract revision (Recommended)
+pm `ready` from blocked(limit) needs a revised contract (version +1) and the attached user reply; retry and environment counters reset; structural test that every non-terminal state has an exit. Effort S, risk low.
+B) Cancel and new draft
+pm `cancel` then a new draft with follows; structural test added. Effort S, risk low.
+C) Keep as is
+No exit except cancel/override. Effort S, risk medium.
+
+State: approved
+Actual answer: A — resume after contract revision (D52, 2026-10-19)
+Accepted scope: `ready` row adds source blocked(limit) with guard revised contract (version +1) + attached user reply; leaving blocked(limit) resets retry and environment counters; structural test: every non-terminal state has at least one exit row. Folded into T2.
+
+### E2: retry limit bypass through `ready` from rework
+Finding: E2, P1, confidence 8/10, docs/designs/pm-led-onboarding.md:251 (`ready` from rework, retry "none") and :257 (`reassign` from rework, "consumes 1 retry") — reviewer: plan-eng-review round 3.
+Plan baseline: D40/D45: conflict and ambiguity leave rework via `ready` (no retry), defect via `reassign` (1 retry).
+Runtime evidence: none (no mesh code yet).
+Comparison grid:
+| commitment | current | A | B | C |
+|---|---|---|---|---|
+| where retries are counted | per verb (`reassign` only) | at `start`: every attempt after the first counts, except the first attempt after an environment unblock or a blocked(limit) resume | `ready` from rework removed; only `reassign` leaves rework | per verb |
+| contract revision on conflict/ambiguity | required (D40) | unchanged | moves into `reassign` guard | unchanged |
+| D52 counter reset | approved | unchanged | unchanged | unchanged |
+Question D53 (asked in Korean in chat; English rendering saved, repo is English-only):
+D53 — E2: two rows move an item out of rework; `ready` uses no retry and `reassign` uses one, so a trivial contract edit bypasses the retry limit. Recommendation: A, counting at `start` makes the limit independent of which verb was used. Completeness: A=10/10, B=8/10, C=3/10. Net: count attempts where they happen vs collapse the verbs.
+Header: E2 retry count
+Options:
+A) Count at start (Recommended)
+Retries counted at `start` (every attempt after the first), excluding the first attempt after environment unblock or limit resume; tests for both rework paths. Effort S, risk low.
+B) Single exit verb
+Remove `ready` from rework; `reassign` carries the class guards and the retry. Effort S, risk low.
+C) Keep as is
+Per-verb counting. Effort S, risk medium.
+
+State: approved
+Actual answer: A — count retries at start (D53, 2026-10-19)
+Accepted scope: retry counted at `start` for every attempt after the first, excluding the first attempt after environment unblock or limit resume; `reassign` and `ready` no longer count; tests for both rework exits (ready and reassign) hitting the same limit. Folded into T2.
+
+### E3: a lead can choose class `limit`
+Finding: E3, P2, confidence 8/10, docs/designs/pm-led-onboarding.md:256 (`fail` by lead -> "blocked(limit)" is a listed destination) — reviewer: plan-eng-review round 3.
+Plan baseline: D40 lists `limit` among five classes; D44/D53 produce blocked(limit) from counters.
+Runtime evidence: none.
+Comparison grid:
+| commitment | current | A | B | C |
+|---|---|---|---|---|
+| classes a lead may pass to `fail` | all five | defect, conflict, ambiguity, environment; `limit` only from mesh counters | all five | four (as A) |
+| lead "too large, split it" signal | none (only via limit) | `fail --class conflict --reason too_large`: rework, PM splits into child drafts linked by `parent`; parent closes when children close; no Slack question unless the PM asks | via limit (user question, counters reset by D52) | none (lead writes it in the conflict evidence) |
+| tests | none | limit refused for callers; too_large -> rework; split children link + parent close | none | limit refused |
+Question D54 (re-asked; asked in Korean in chat; English rendering saved):
+D54 — E3: give the lead's "too large" signal its own route instead of `limit`. Recommendation: A, the split request reaches the PM who can act on it, and limit stays a counted fact. Completeness: A=10/10, B=5/10, C=7/10. Net: dedicated split route vs reuse limit.
+Header: E3 split signal
+Options:
+A) Split route (Recommended)
+limit mesh-only; `fail --class conflict --reason too_large` -> PM splits into parent-linked child drafts; tests. Effort S, risk low.
+B) Keep as is
+Lead may pass limit; user is asked. Effort S, risk medium.
+C) Mesh-only limit, no split
+Four classes; split stays free text in conflict evidence. Effort S, risk low.
+
+State: approved
+Actual answer: A — split route (D54 re-ask, 2026-10-19)
+Accepted scope: `fail` accepts defect/conflict/ambiguity/environment from callers, `limit` only from mesh counters; `fail --class conflict --reason too_large` -> rework; PM `split` -> blocked(children) with parent-linked child drafts; mesh closes the parent when every child is closed, a cancelled child returns it to rework; tests: limit refused, too_large route, split links, parent auto-close, cancelled child. Folded into T2.
+History: first ask (D54, options A mesh-only / B keep) answered with a question: the operator asked what mesh is and argued that a lead escalating a hard task is a useful signal that can lead to splitting the task; re-asked with a dedicated split route.
+
+### E4: repro "fails" on any non-zero exit
+Finding: E4, P2, confidence 8/10, D46 accepted scope ("the `ready` guard runs it at the base commit and records the failure") — reviewer: plan-eng-review round 3.
+Plan baseline: D46: a passing repro refuses ready; any other result is recorded as failing-before.
+Runtime evidence: none.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| repro result classes | pass / fail | pass -> refused (not reproduced); exit 126/127, timeout, or spawn error -> refused (repro not runnable); other non-zero -> failing-before recorded | pass / fail |
+| execution | unspecified | argv (no shell), repo root cwd, config timeout (default 120 s) | unspecified |
+| tests | none | not runnable (127), timeout, real failure | none |
+Question D55 (asked in Korean in chat; English rendering saved):
+D55 — E4: a typo (127) or timeout counts as proof the bug existed. Recommendation: A, only a real test failure is evidence. Completeness: A=10/10, B=4/10. Net: classify the exit vs trust any failure.
+Header: E4 repro result
+Options:
+A) Classify repro exit (Recommended)
+127/126/timeout/spawn error refused as not runnable; argv, repo cwd, timeout; three tests. Effort S, risk low.
+B) Keep as is
+Any non-zero exit is failing-before. Effort S, risk medium.
+
+State: approved
+Actual answer: A — classify repro exit (D55, 2026-10-19)
+Accepted scope: repro runs as argv (no shell) at repo root with a config timeout (default 120 s); pass -> refused (not reproduced); 126/127, timeout or spawn error -> refused (not runnable); other non-zero -> failing-before recorded; tests for 127, timeout and a real failure. Folded into T2/T5.
+
+### E5: failing-before record not bound to the contract version
+Finding: E5, P2, confidence 7/10, D46 ("records the failure on the item (item-scoped, so it stays valid across reassignment)") with D47 (contract version per attempt) — reviewer: plan-eng-review round 3.
+Plan baseline: D46 binds the record to the item only.
+Runtime evidence: none.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| failing-before scope | item | item + contract version + repro command hash; `verify` requires a record matching the current version; a contract revision that changes the repro re-runs it at `ready` | item |
+| reassignment validity (D46) | kept | kept when the repro is unchanged | kept |
+| tests | none | repro changed -> old record ignored, re-run at ready | none |
+Question D56 (asked in Korean in chat; English rendering saved):
+D56 — E5: if the PM changes the repro command, the old failing-before record still counts. Recommendation: A, evidence must match the command that verify will run. Completeness: A=10/10, B=5/10. Net: version-bound evidence vs item-bound.
+Header: E5 repro version
+Options:
+A) Bind to version (Recommended)
+Record keyed by contract version + repro hash; verify needs a matching record; changed repro re-runs at ready; test. Effort S, risk low.
+B) Keep as is
+Item-scoped record. Effort S, risk medium.
+
+State: approved
+Actual answer: A — bind failing-before to contract version and repro hash (D56, 2026-10-19)
+Accepted scope: record keyed by contract version + repro command hash; `verify` requires a matching record; a contract revision that changes the repro re-runs it at `ready`; unchanged repro keeps the record across reassignment (D46); test: changed repro ignores the old record. Folded into T2.
+
+Section 1 (architecture): new states blocked(children), closed and the blocked(limit) exit reviewed; per-integration failures (repro hang, Slack duplicate, dead lead) handled by D55/D48/D45. No new issues found.
+Section 2 (code quality): one declarative table in mesh/state.py read by the CLI and the tests; `blocked` as one state with a reason field. No issues found.
+Section 3 (tests): 19 required paths, all GAP until T2 (no code yet), all required by approved decisions; the round-3 test plan artifact (gstack project folder, 2026-10-19 18:34) supersedes the 15:10 plan.
+
+### E6: state lock held while commands run
+Finding: E6, P2, confidence 6/10 (medium confidence, the design is silent), docs/designs/pm-led-onboarding.md:242 ("State writes use a lock file plus atomic replace") with D46/D55 (repro up to 120 s at `ready`) and E6 (`verify` runs commands) — reviewer: plan-eng-review round 3.
+Plan baseline: lock scope unspecified.
+Runtime evidence: none.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| lock scope | unspecified | lock only for read-check and write; commands run unlocked; the write re-checks item version and attempt id (compare-and-set), a mismatch discards the result as stale | lock held for the whole verb |
+| tests | none | Slack attach during a long verify succeeds; concurrent change during verify -> stale result discarded | none |
+Question D57 (asked in Korean in chat; English rendering saved):
+D57 — E6: should commands run outside the state lock? Recommendation: A, a 120 s repro or a long test run must not freeze Slack intake and other leads; compare-and-set keeps correctness. Completeness: A=10/10, B=6/10. Net: short lock + version check vs simple long lock.
+Header: E6 lock scope
+Options:
+A) Short lock + CAS (Recommended)
+Commands run unlocked; write re-checks version and attempt id; two tests. Effort S, risk low.
+B) Lock whole verb
+Simple; blocks every other mesh command while commands run. Effort S, risk medium.
+
+State: approved
+Actual answer: A — short lock + compare-and-set (D57, 2026-10-19)
+Accepted scope: lock held only for read-check and write; repro and verification commands run unlocked; the write re-checks item version and attempt id and discards a stale result; tests: Slack attach succeeds during a long verify; a concurrent change during verify discards the result. Folded into T2.
+
+Section 4 (performance): E6 resolved by D57; state.json size stays small (one project's items); no other issues found.
+
+### Outside voice (Codex gpt-6-astra, eng round 3, 2026-10-19) — 9 findings, all verified against the E2 table (:251-:263) and the failure registry
+
+### O3-4: commands run unlocked in the shared working tree; repro at the base commit needs a checkout
+Finding: O3-4, High, Codex; verified: design E2 ("bugfix repro fails at base commit") + D57 (commands unlocked) + roles share one repo cwd.
+Plan baseline: D46/D55 run repro at the base commit; D57 runs commands unlocked; location unspecified.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| where repro/verify run | unspecified (shared tree implied) | a disposable `git worktree` at the recorded commit (base commit for repro, submitted commit for verify), removed after; results bound to that commit | shared tree, serialized by a separate run lock |
+| uncommitted changes | ignored by D13 commit binding | excluded by construction | may leak into results |
+| tests | none | repro does not touch the lead's tree; verify ignores an uncommitted edit | run lock serializes |
+Question D58 (asked in Korean; English rendering saved): run repro/verify in a disposable worktree at the recorded commit? Recommendation: A.
+Header: O3-4 run location
+Options:
+A) Disposable worktree (Recommended)
+git worktree at the recorded commit per run; removed after; two tests. Effort M, risk low.
+B) Shared tree + run lock
+Serialize commands in the shared tree. Effort S, risk medium.
+
+State: approved
+Actual answer: A — disposable worktree (D58, 2026-10-19)
+Accepted scope: every repro/verify run uses a disposable git worktree at the recorded commit, with an optional config `prepare` command, removed after the run; results bound to that commit; tests: repro leaves the lead's tree untouched; verify ignores an uncommitted edit. Folded into T2/T5.
+
+### O3-1: closing a dependency makes it unsatisfied
+Finding: O3-1, High, Codex; verified: :253 `start` guard "depends verified"; :260 `close` moves verified -> closed (D49); split parents never reach verified (D54).
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| dependency satisfied when | dependency is `verified` | dependency is `verified` or `closed` (a verified-then-reopened item stops satisfying it) | dependency is `closed` only |
+Question D59 (asked in Korean; English rendering saved). Recommendation: A.
+Header: O3-1 depends
+Options:
+A) Verified or closed (Recommended)
+Keeps today's start timing; closed stays satisfying. Effort S, risk low.
+B) Closed only
+Dependents wait for PM acceptance. Effort S, risk low.
+
+State: approved
+Actual answer: A — verified or closed (D59, 2026-10-19)
+Accepted scope: `start` guard accepts dependencies in verified or closed; a dependency that leaves verified for rework stops satisfying it; tests: closed dependency satisfies; split parent closed satisfies. Folded into T2.
+
+### O3-2: no repair path for invalidated or objected-to verification
+Finding: O3-2, High, Codex; verified: :255 `verify` only from verifying; :256 `fail` only from running/verifying; :263 `revalidate` only flags; :261 `close` checks acknowledgment only.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| leaving verified before close | none | pm `reject` verified -> rework with a failure record (class from the reply or `defect` for a revalidate flag) | lead `fail` also allowed from verified |
+| close with a revalidate flag | allowed | refused until the item is re-verified or rejected | allowed |
+| after closed | flag only | flag -> PM opens a follow-up draft (D41 path) | flag only |
+| tests | none | reject route; close refused on flag; follow-up on closed flag | fail from verified |
+Question D60 (asked in Korean; English rendering saved). Recommendation: A.
+Header: O3-2 reject path
+Options:
+A) PM reject + close guard (Recommended)
+`reject` verified -> rework; close refused while flagged; closed flag -> follow-up draft; tests. Effort S, risk low.
+B) Lead fail from verified
+Widen `fail`; no close guard. Effort S, risk medium.
+
+State: approved
+Actual answer: A — PM reject + close guard (D60, 2026-10-19)
+Accepted scope: pm `reject` verified -> rework with a failure record; `close` refused while a revalidate flag is set; a flag on a closed item leads the PM to open a follow-up draft; tests: reject route, close refused on flag, closed-flag follow-up. Folded into T2.
+
+### O3-3: split-parent auto-close bypasses acceptance
+Finding: O3-3, High, Codex; verified: :259 "(mesh) blocked(children) -> closed, every child closed"; :260 `ack` only from verified.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| parent after all children close | mesh -> closed | mesh -> verifying: the parent's own verification commands run (D58 worktree at the merged commit), then verified; PM `close` with the D49/D60 gates | mesh -> verified (no run); PM close with gates |
+| ack scope | verified only | any non-terminal state with attached replies | any non-terminal state |
+| tests | none | children closed -> parent verifying -> verified -> close gated | parent verified -> close gated |
+Question D61 (asked in Korean; English rendering saved). Recommendation: A.
+Header: O3-3 parent accept
+Options:
+A) Parent re-verifies (Recommended)
+Children closed -> parent verifying (own commands) -> verified -> gated close; ack widened; tests. Effort S, risk low.
+B) Parent verified without run
+Children closed -> parent verified; gated close; ack widened. Effort S, risk medium.
+
+State: approved
+Actual answer: A — parent re-verifies (D61, 2026-10-19)
+Accepted scope: when every child is closed mesh moves the parent to verifying and runs the parent's verification commands at the merged commit; pass -> verified, fail -> rework (defect); PM `close` keeps the D49/D60 gates; `ack` allowed in any non-terminal state with attached replies; test: children closed -> parent verifying -> verified -> gated close. Folded into T2.
+
+### O3-5: dependency deadlocks and a vacuous exit test
+Finding: O3-5, Medium, Codex; verified: :251 `ready` guard has no dependency validation; no row leaves `ready` except start/cancel/override; D52 structural test counts any exit.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| dependency validation at `ready` | none | unknown ids, self-dependency and cycles refused | none |
+| revising a ready item | not possible | pm `revise` ready -> draft (contract editable, version +1 on the next ready) | not possible |
+| structural exit test | any exit counts | cancel and override do not count as exits | unchanged |
+Question D62 (asked in Korean; English rendering saved). Recommendation: A.
+Header: O3-5 depends check
+Options:
+A) Validate + revise + strict test (Recommended)
+Refuse unknown/self/cyclic depends; pm `revise` ready -> draft; exit test ignores cancel/override. Effort S, risk low.
+B) Keep as is
+Effort S, risk medium.
+
+State: approved
+Actual answer: A — validate, revise, strict exit test (D62, 2026-10-19)
+Accepted scope: `ready` refuses unknown, self and cyclic dependencies; pm `revise` ready -> draft; the structural exit test does not count cancel or override; tests for each refusal and for revise. Supersedes the D52 test wording ("has at least one exit row"). Folded into T2.
+
+### O3-6: an old reply can reset exhausted counters repeatedly
+Finding: O3-6, Medium, Codex; verified: D52 guard "the attached user reply" has no time or consumption binding.
+Comparison grid:
+| commitment | current | A | B |
+|---|---|---|---|
+| reply that unlocks blocked(limit) | any attached reply | a reply received after the item entered blocked(limit), consumed by that resume | unchanged |
+| tests | none | old reply refused; a reply cannot unlock twice | none |
+Question D63 (asked in Korean; English rendering saved). Recommendation: A.
+Header: O3-6 reply binding
+Options:
+A) Fresh, single-use reply (Recommended)
+Reply must postdate the limit event and is consumed; two tests. Effort S, risk low.
+B) Keep as is
+Effort S, risk medium.
+
+State: approved
+Actual answer: A — fresh, single-use reply (D63, 2026-10-19)
+Accepted scope: only a reply received after the blocked(limit) entry unlocks it, and it is consumed by that resume; tests: old reply refused; one reply cannot unlock twice. Folded into T2.
+
+### O3-7: no local way to record an operator answer (Slack opt-out)
+Finding: O3-7, Medium, Codex; verified: only the Slack watcher could attach replies.
+State: approved
+Actual answer: operator free-text answer (2026-10-20): operator answers come through the PM terminal or Slack; the PM terminal is the current channel, so the hook/event trigger is set for it (D64).
+Accepted scope: `UserPromptSubmit` hook (installed by `mesh init`) runs `mesh event record --source terminal`, recording PM-pane prompts only to `.mesh/events.jsonl`; pm verb `reply <item> --event <id>` accepts only hook-recorded events; `operator_channel` config defaults to `terminal`; D63 freshness/single use applies; tests listed in work-item-state-model.md section 9a. Folded into T2 (reply verb), T3 (hook + config), T4 (Slack path unchanged).
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | issues_open (all resolved by decision) | mode: SCOPE_REDUCTION, 0 critical gaps; 3 deferred, 2 kept; 5 flow/premise findings + 7 outside findings decided |
+| Outside Review | codex plan-review (default-on, in /plan-eng-review and /plan-ceo-review) | Independent 2nd opinion | 3 | completed (eng run 1 unavailable: auth) | eng: 9 findings, all accepted; CEO: 7 findings; 7 resolved; 0 unresolved |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open (all resolved by decision) | 6 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** codex (gpt-6-astra), plan-review phase: eng run 1 unavailable (refresh_token_reused), eng run 2 completed with 9 findings (D26-D35), CEO run completed with 7 findings (4 High, 3 Medium), resolved by D45-D50 and one factual correction (X7).
+- **CROSS-MODEL:** native CEO review found the flow-conformance gaps (W1-W3, E-1, B1); Codex found the cross-decision inconsistencies (caller rules, evidence capture, policy binding, Slack guarantee, completion boundary, baseline comparability, naming vs deferral). Codex advised cutting D42 and the D43 comparison; the operator kept both with corrections. Model identities: native = this Claude session; outside = gpt-6-astra.
+- **VERDICT:** no review CLEAR (count rule: issues found, all decided). The CEO review changed the state machine (transition table, `closed`, failure classes, type guards), so a fresh eng review of E2 is recommended before the work-order rewrite; eng review required.
+
+NO UNRESOLVED DECISIONS

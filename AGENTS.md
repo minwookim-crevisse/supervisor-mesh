@@ -59,4 +59,5 @@ The decision log, `docs/tracker.md`, `docs/work-orders/` and this file are writt
 - Remove unused imports/variables immediately (surgical changes leave no orphans of your own).
 - Strip debug code before the PR.
 - Dispose one-shot scripts right after they run (identify targets by condition at run time, never by hardcoded ids).
+- When a document is superseded or copied for a review, delete its drift copies and outdated md in the same task; keep evidence (reports, verdict JSON, work orders).
 - Never run worktree-destroying git commands (reset --hard / checkout . / clean -fd) on a shared tree; revert specific files only.

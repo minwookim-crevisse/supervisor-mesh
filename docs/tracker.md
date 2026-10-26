@@ -20,9 +20,13 @@
 | WO-0013 | Security review of PM bootstrap (trust, preflight bypass, unprompted writes incl. R3-5) | security | WO-0012 | open (queued) | — |
 | WO-0014 | Live fresh-project E2E (all design Success Criteria incl. hand-started-shell FAIL) + integration gate; fix R3-16 | qa | WO-0012 | open (queued) | — |
 | WO-0015 | Release 0.2.0: version, README Quickstart, commit + push after operator OK | ship | WO-0013, WO-0014 | open (queued) | — |
+| WO-0016 | Formal verification of the work-item state model (TLA+), `docs/work-orders/2026-10-21-verification-skills.md` | qa | — | dispatched | `docs/reports/WO-0016-qa.md` |
+| WO-0017 | App-driving verification skill `verify-supervisor-mesh`, same work order | qa | — (∥ WO-0016) | dispatched | `docs/reports/WO-0017-qa.md` |
+| WO-0018 | Local checkpoint commit (batch V work + state model + docs), NO push | ship | — | dispatched | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).
 
 Batch 2 = WO-0004 (backend, code) ∥ WO-0007 (each lead, own report). Disjoint files.
 Batch 3 = WO-0005-S (security, read-only) ∥ WO-0005-Q (qa: tests/test_slack.py, scripts/scrub.sh) ∥ WO-0008 (backend: README). Disjoint files.
+Batch V = WO-0016 ∥ WO-0017 (qa lead, disjoint files; integration gate = PM runs `make check` + `make formal`).
 Design for WO-0009..0015: `docs/designs/pm-led-onboarding.md` (APPROVED 2026-10-14).

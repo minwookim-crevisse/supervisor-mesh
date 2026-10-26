@@ -1,0 +1,9 @@
+  Init is done. The summary line was created=12 merged=0 skipped=0.
+  Fill docs/harness/part-b-checklist.md next.
+
+✻ Brewed for 1m 31s · done 1:04 PM                                     
+                                                                       
+─────────────────────────────────────────────────────────────────────────
+❯                                                                   
+─────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 10 agents                   
