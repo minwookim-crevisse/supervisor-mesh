@@ -305,6 +305,52 @@ class Init(unittest.TestCase):
                 self.assertEqual(r.returncode, 1, out(r))
                 self.assertIn("FAIL  an apply run", out(r))
 
+    RERUN_OUT = "SKIP    AGENTS.md\nSKIP    docs/x.md\n# summary: created=0 merged=0 skipped=14\n"
+
+    def mixed(self, e: Env, outputs: list[str]) -> list[dict]:
+        """The live re-run shape: preview and apply of scaffold.py in ONE Bash call, both outputs in its result."""
+        script = f'python3 "{e.lead}/skills/init/scaffold.py" --target "{e.proj}" --stack python'
+        return [self.call(1, f"{script} --dry-run && {script}"), self.result(2, 1, "".join(outputs))]
+
+    def test_y04_rerun_mixed_call_with_zero_summaries_and_no_change_passes(self):
+        e = Env(self.addCleanup)
+        e.make_run()
+        self.transcript(e, self.mixed(e, [self.RERUN_OUT, self.RERUN_OUT]))
+        self.hashes(e, [])
+        r = e.smv("init-check", "rerun", "--before", "before", "--after", "after")
+        self.assertEqual(r.returncode, 0, out(r))
+        self.assertIn("mixed call toolu_1: every summary created=0 merged=0 (2) and no file changed", out(r))
+
+    def test_y04_rerun_mixed_call_with_a_nonzero_summary_fails(self):
+        e = Env(self.addCleanup)
+        e.make_run()
+        self.transcript(e, self.mixed(e, [self.RERUN_OUT, self.RERUN_OUT.replace("created=0", "created=1")]))
+        self.hashes(e, [])
+        r = e.smv("init-check", "rerun", "--before", "before", "--after", "after")
+        self.assertEqual(r.returncode, 1, out(r))
+        self.assertIn("FAIL  an apply run", out(r))
+
+    def test_y04_rerun_mixed_call_with_a_changed_file_fails(self):
+        e = Env(self.addCleanup)
+        e.make_run()
+        self.transcript(e, self.mixed(e, [self.RERUN_OUT, self.RERUN_OUT]))
+        (e.proj / "AGENTS.md").write_text("before\n")
+        self.assertEqual(e.smv("hash", "--label", "before").returncode, 0)
+        (e.proj / "AGENTS.md").write_text("after\n")
+        self.assertEqual(e.smv("hash", "--label", "after").returncode, 0)
+        r = e.smv("init-check", "rerun", "--before", "before", "--after", "after")
+        self.assertEqual(r.returncode, 1, out(r))
+        self.assertIn("FAIL  an apply run", out(r), "a mixed call never counts when a file changed")
+
+    def test_y04_fresh_mixed_call_is_never_proof(self):
+        e = Env(self.addCleanup)
+        e.make_run()
+        self.transcript(e, self.mixed(e, [self.scaffold_out(True), self.scaffold_out(False)]))
+        self.hashes(e, ["AGENTS.md", "docs/x.md"])
+        r = e.smv("init-check", "fresh", "--before", "before", "--after", "after")
+        self.assertEqual(r.returncode, 1, out(r))
+        self.assertIn("FAIL  an apply run", out(r))
+
     def test_y04_apply_result_correlated_by_id_passes(self):
         e = Env(self.addCleanup)
         e.make_run()

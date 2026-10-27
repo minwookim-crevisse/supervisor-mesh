@@ -14,10 +14,12 @@ Proves plugin behaviour through its real user path. The harness is `bin/smv.py` 
 action); every action it takes is a captured step under the run's `evidence/` directory. Read `features/README.md`
 before driving a feature; each feature file is the recipe.
 
-Verified against: projmux 0.17.2, Claude Code 2.1.307, tmux 3.4, Python 3.12, plugin 0.1.2 (every flag listed under
-Helpers re-checked with `--help` on these versions; the review fixes added no projmux, claude or tmux flag, only
-`git status --ignored=matching`). If `projmux version` or `claude --version` differs, re-check those flags before
-trusting a FAIL. Before a live run, `"$SMV" selftest` must exit 0 (offline, Helpers).
+Verified against: projmux 0.17.2, Claude Code 2.1.310, tmux 3.4, Python 3.12, plugin 0.1.2. Every flag listed under
+Helpers was checked with `--help` on these versions; on 2.1.310 the claude flags (`plugin marketplace add|remove
+--scope --json`, `plugin install|uninstall --scope`, `plugin list --json`) were re-checked live and none changed. The
+review fixes added no projmux, claude or tmux flag, only `git status --ignored=matching`. If `projmux version` or
+`claude --version` differs, re-check those flags before trusting a FAIL. Before a live run, `"$SMV" selftest` must
+exit 0 (offline, Helpers).
 
 ## Hard rules
 
@@ -57,7 +59,8 @@ trusting a FAIL. Before a live run, `"$SMV" selftest` must exit 0 (offline, Help
 ## Launch
 
 Run every command from the root of the checkout under test. The caller gives you `SCRATCH_ROOT`: an existing absolute
-directory outside the checkout (normally the session scratchpad).
+directory outside the checkout (the session scratchpad for a throwaway run; a durable directory when the evidence must
+outlive the session, see Gotchas).
 
 ```
 SMV=.claude/skills/verify-supervisor-mesh/bin/smv.py
@@ -315,7 +318,10 @@ order. A rerun picks up from what is left.
 8. `projmux unregister project uid:<proj> --dry-run`: a plan naming another project or an agent the run did not record
    stops cleanup (exit 4); a plan that failed or does not name the project stops it (exit 1). Then `--yes`, which must
    exit 0. Cleanup confirms the project and every recorded agent are gone from `projmux get projects -o json` and
-   `projmux get agents -A -o json`.
+   `projmux get agents -A -o json`. The plan also cascades the project's own default window and its shell pane, which
+   `run.json` does not record (it records agents only). That is intended: they belong to the run's own project and the
+   plan lists them under it (`cascade window/...`, `cascade pane/...`); the ownership check refuses only another
+   project or an unrecorded agent.
 9. Takes the `after-cleanup` snapshot and compares it with the baseline (FAIL as in Doctor, and this run's install row
    must be gone; no baseline is the FAIL `isolation not checked`). Only when every step passed does it delete
    `<run>/proj/` (`--keep-proj` keeps it), mark the run `cleaned` and exit 0. On any FAIL the scratch project and its
@@ -354,9 +360,13 @@ run recorded.
   scratch project (`.`, `${CLAUDE_PROJECT_DIR}`, `$PWD` or its path), and the `# summary:` and `CREATE` lines of the
   tool result with that tool_use_id. Fresh: the first apply reads `created>0 merged=0 skipped=0`, its created count
   and `CREATE` list equal the files added on disk, and no pre-existing file changed. Rerun: every apply reads
-  `created=0 merged=0` and every hash is unchanged. A dry-run preview and the agent's echo of a summary are counted on
-  an info line, never as proof. Another info line records which `scaffold.py` the tool calls ran (checkout, installed
-  copy, or other).
+  `created=0 merged=0` and every hash is unchanged. In rerun mode only, a mixed call (preview and apply of
+  `scaffold.py` in one Bash command, every `--target` the scratch project) also counts as proof when every
+  `# summary:` line in its own result (same tool_use_id, not `is_error`; at least one) reads `created=0 merged=0`
+  and this check's hashes show no file added, removed or changed. The output names it (`mixed call <id>: every
+  summary created=0 merged=0 (N) and no file changed`, or `mixed call <id> not counted: <why>`). Fresh mode never
+  takes a mixed call. A dry-run preview and the agent's echo of a summary are counted on an info line, never as
+  proof. Another info line records which `scaffold.py` the tool calls ran (checkout, installed copy, or other).
 - `"$SMV" tgrep --pattern RE [--since-last-send] [--assistant-only | --tool-inputs] [--absent] [--min N] [--wait S]`:
   search an agent's transcript in place. `--assistant-only` searches only the agent's visible replies and tool-call
   inputs (no user records, which also hold the injected SKILL.md text, and no thinking). `--tool-inputs` searches
@@ -444,6 +454,12 @@ CLI surface used, each checked with `--help` on the versions above:
 - A failed cleanup keeps the scratch project on purpose: its directory is the cwd `claude plugin uninstall --scope
   project` needs, and its `.git/` holds the digest key the snapshots compare with. Fix what the `LEFT` lines name,
   then run `"$SMV" cleanup` again; never delete `<run>/proj/` by hand while a `LEFT` line names an install row.
+- A scratch root under `/tmp` (the usual session scratchpad) does not survive a reboot or a tmp cleaner. When it
+  disappears, `run.json` and all the evidence go with it, and `"$SMV" cleanup` cannot reconcile without `run.json`: the
+  projmux project stays registered with a missing root. Remove it by its recorded uid (from the report or the launch
+  output), and only after `projmux unregister project uid:<proj> --dry-run` names that project and no other. For
+  evidence that must outlive the session, pass a durable `SCRATCH_ROOT` outside the checkout and outside the Claude
+  config dir, for example `~/.local/state/<name>/<WO-id>` (create it first; launch needs an existing directory).
 
 - Auto mode. The user's Claude Code config can start the pane in auto mode (footer `⏵⏵ auto mode on`), or with
   bypass permissions. Then permission prompts may never show: stop 11 may never fire, and a run cannot prove that a
@@ -453,15 +469,15 @@ CLI surface used, each checked with `--help` on the versions above:
 
 ## Known gaps
 
-- This version of `smv` has not run live yet. Everything changed by the review fixes was proven only offline
-  (`"$SMV" selftest`, stubs): the reconcile cleanup, the send checks before every Enter, the stop-first wait, the
-  kept-lines captures, the apply-run proof in `init-check`, the `run.json` lock. Until the final live run proves them,
-  report them as offline-verified only. In particular:
-  - the automated scope-pick Enter on a verified highlight has never run live: run #4 stopped with 12 and the operator
-    picked the scope;
-  - the cleanup branch that removes a registry entry this run's declaration created (`marketplace remove`) has never
-    run live;
-  - run #4 ran in auto mode, so permission stop 11 and the skills' `allowed-tools` coverage were not exercised.
+- Live coverage of the review fixes is one run (2026-10-26): the automated scope-pick Enter on a verified highlight,
+  the reconcile cleanup and `send`'s checks before every Enter ran live once and passed. The rest of the fixes are
+  proven offline (`"$SMV" selftest`, stubs) and by that one run's journey only. Still not run live:
+  - the cleanup branch that removes a registry entry this run's declaration created (`marketplace remove`): in the
+    live run the `supervisor-mesh` registry entry predated the run, so cleanup left it as it was;
+  - permission stop 11 and the skills' `allowed-tools` coverage: the live pane was again in auto mode (as in run #4),
+    so no permission prompt showed;
+  - the rerun rule for a mixed `scaffold.py` call in `init-check` was added after that run, from its finding (the PM
+    batched preview and apply in one Bash call); it is proven offline only.
 - Gitignored files in the lead tree are hashed file by file at every snapshot: a large ignored tree (a virtualenv)
   makes doctor slower, and any change to an ignored file (a parallel session's `make check` rewriting `__pycache__/`)
   is a lead-tree FAIL, reported, not hidden.

@@ -61,8 +61,11 @@ Preconditions:
   "$SMV" wait --timeout 900
   ```
 - **Re-run proof.** `init-check` ends with `init-check rerun: PASS`: every apply run's summary is `created=0 merged=0`
-  (expect `skipped=14`) and the hash comparison is identical. `hash-diff` prints `IDENTICAL`, and the last step
-  prints exactly the lines of the `git-status-post-init` step.
+  (expect `skipped=14`) and the hash comparison is identical. If the PM ran the preview and the apply in one Bash call
+  (a mixed call), that call counts only in this re-run check: every summary line in its own result must read
+  `created=0 merged=0` (there are normally two) and no file may change; the proof line then reads
+  `mixed call <id>: every summary created=0 merged=0 (2) and no file changed`. `hash-diff` prints `IDENTICAL`, and
+  the last step prints exactly the lines of the `git-status-post-init` step.
   ```
   "$SMV" hash --label post-rerun
   "$SMV" init-check rerun --before post-init --after post-rerun
@@ -101,6 +104,9 @@ Preconditions:
   keeps). If you had to send a scripted reply, the script output that followed it is still in range.
 - An agent that only previews (`--dry-run`) or only reports a summary in its reply fails `init-check`: there is no
   apply run to prove. If the turn stopped after the preview, that is the finding; do not run the script yourself.
+- A mixed call (preview and apply in one Bash command) is never proof on the fresh run: its result cannot tell which
+  `CREATE` lines the apply printed. On the re-run it counts only as described above; a non-zero summary or any changed
+  file means it is `not counted` and the check fails.
 - If the turn asks before running the script (for example whether to run again on an initialized project), reply
   with `"$SMV" send --text "Yes, run the scaffold script as the skill says."` and wait again. Never edit pillar files
   by hand.

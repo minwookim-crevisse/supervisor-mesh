@@ -953,17 +953,21 @@ PROJECT_TARGETS = {".", "./", "${CLAUDE_PROJECT_DIR}", "$CLAUDE_PROJECT_DIR", "$
 
 
 def scaffold_call(command: str, proj: Path | None) -> dict | None:
-    """The scaffold.py run inside one Bash command: mode (apply, dry-run, or mixed when one command runs it more
-    than once), and whether --target names the scratch project (., the project dir variable, or its path)."""
+    """The scaffold.py runs inside one Bash command: mode (apply, dry-run, or mixed when one command runs it more
+    than once), and whether every run's --target names the scratch project (., the project dir variable, or its
+    path)."""
     segs = [x for x in re.split(r"&&|\|\||;|\n|\|", command) if SCAFFOLD_RE.search(x)]
     if not segs:
         return None
-    m = TARGET_RE.search(segs[0])
-    target = next((g for g in m.groups() if g is not None), None) if m else None
-    ok = target in PROJECT_TARGETS or (bool(target) and proj is not None and os.path.isabs(target)
-                                       and same_path(target, proj))
+
+    def target_ok(seg: str) -> bool:
+        m = TARGET_RE.search(seg)
+        target = next((g for g in m.groups() if g is not None), None) if m else None
+        return target in PROJECT_TARGETS or (bool(target) and proj is not None and os.path.isabs(target)
+                                             and same_path(target, proj))
+
     mode = "mixed" if len(segs) > 1 else ("dry-run" if re.search(r"(?<!\S)--dry-run\b", segs[0]) else "apply")
-    return {"mode": mode, "target_ok": ok}
+    return {"mode": mode, "target_ok": all(target_ok(x) for x in segs)}
 
 
 def proof_lines(path: Path, since: dt.datetime | None = None, proj: Path | None = None) -> list[dict]:
@@ -1551,7 +1555,9 @@ def cmd_msg_status(a) -> int:
 def cmd_init_check(a) -> int:
     """The proof is the scaffold.py apply run itself: a Bash tool_use without --dry-run whose --target is the
     scratch project, and the summary and CREATE lines of the tool result with that tool_use_id. A dry-run preview
-    or the agent's echo of a summary is info only, never proof."""
+    or the agent's echo of a summary is info only, never proof. Rerun only: a mixed call (preview and apply in one
+    command) on the scratch project also counts when every summary in its own result reads created=0 merged=0
+    (at least one) and no file changed; fresh never takes a mixed call."""
     run = Run.load(a.run)
     path = transcript_source(run, run.data["pm"])
     if not path:
@@ -1564,9 +1570,12 @@ def cmd_init_check(a) -> int:
         if r["kind"] == "scaffold result":
             results.setdefault(r["id"], []).append(r)
 
-    def summary(uid: str) -> tuple[int, int, int] | None:
-        sums = [tuple(int(x) for x in m.groups()) for r in results.get(uid, []) if not r["error"]
+    def own_sums(uid: str) -> list[tuple[int, int, int]]:
+        return [tuple(int(x) for x in m.groups()) for r in results.get(uid, []) if not r["error"]
                 for m in SUMMARY_RE.finditer(r["text"])]
+
+    def summary(uid: str) -> tuple[int, int, int] | None:
+        sums = own_sums(uid)
         return sums[-1] if sums else None
 
     applies = [i for i, c in calls.items() if c["mode"] == "apply" and c["target_ok"]]
@@ -1575,12 +1584,25 @@ def cmd_init_check(a) -> int:
     others = [i for i, c in calls.items() if c["mode"] == "mixed" or not c["target_ok"]]
     echoes = [r["text"] for r in rows if r["kind"] == "assistant summary"]
     added, removed, changed = hash_diff(read_hashes(run, a.before), read_hashes(run, a.after))
+    unchanged = not (added or removed or changed)
+    mixed_proof, mixed_notes = [], []
+    for i in (i for i, c in calls.items() if c["mode"] == "mixed" and c["target_ok"] and a.mode == "rerun"):
+        sums = own_sums(i)
+        why = ("its own result has no summary" if not sums else
+               "a summary has created>0 or merged>0" if not all(c == 0 and m == 0 for c, m, _ in sums) else
+               "files changed" if not unchanged else None)
+        if why:
+            mixed_notes.append(f"mixed call {i} not counted: {why}")
+        else:
+            mixed_proof.append(i)
+            mixed_notes.append(f"mixed call {i}: every summary created=0 merged=0 ({len(sums)}) and no file changed")
+    proof = ", ".join([*(f"{i}: created={c} merged={m} skipped={k}" for i, (c, m, k) in applied), *mixed_notes])
     checks = [("scaffold.py runs since the last send (info)", True,
                f"apply on the scratch project {len(applies)} (with a result summary {len(applied)}), dry-run "
                f"{len(previews)}, other target or several runs in one command {len(others)}; echoed summary lines "
                f"{len(echoes)} (info only, never proof)"),
-              ("an apply run (no --dry-run, --target = scratch project) with its own result summary", bool(applied),
-               ", ".join(f"{i}: created={c} merged={m} skipped={k}" for i, (c, m, k) in applied) or "none"),
+              ("an apply run (no --dry-run, --target = scratch project) with its own result summary",
+               bool(applied or mixed_proof), proof or "none"),
               ("scaffold.py the agent ran (info)", True, scaffold_paths(run, path))]
     if a.mode == "fresh":
         first = applied[0] if applied else None
@@ -1595,9 +1617,9 @@ def cmd_init_check(a) -> int:
                     f"only-in-output={sorted(creates - set(added))} only-on-disk={sorted(set(added) - creates)}"),
                    ("no pre-existing file changed or removed", not (removed or changed), f"{removed + changed}")]
     else:
-        checks += [("every apply: created=0 merged=0", bool(applied) and all(c == 0 and mg == 0
-                                                                            for _, (c, mg, _) in applied),
-                    str([x for _, x in applied])),
+        checks += [("every apply: created=0 merged=0", bool(applied or mixed_proof) and all(
+                        c == 0 and mg == 0 for _, (c, mg, _) in applied),
+                    str([x for _, x in applied] + [f"mixed {i}: {own_sums(i)}" for i in mixed_proof])),
                    ("every file's sha256 unchanged", not (added or removed or changed),
                     f"added={added} removed={removed} changed={changed}")]
     return print_checks(f"init-check {a.mode}", checks, run)

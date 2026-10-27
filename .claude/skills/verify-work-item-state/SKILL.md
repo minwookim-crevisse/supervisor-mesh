@@ -163,11 +163,10 @@ other scenario.
 
 ## 5. Sync record
 
-- Repo HEAD at sync: `b656008`.
+- Sync commit: `335540f` (the design file as committed there).
 - Design file `docs/designs/work-item-state-model.md` sha256
-  `f7235b6acb7cd57287efd48d785cbe4770143dca43a7af1711e56dfad8827c1b`
-  (the file was uncommitted at sync time); the same value is `DESIGN_SHA256` in
-  `scripts/formal-check.sh`.
+  `f7235b6acb7cd57287efd48d785cbe4770143dca43a7af1711e56dfad8827c1b`; the same value
+  is `DESIGN_SHA256` in `scripts/formal-check.sh`. The hash decides, not the commit.
 - Covered: design sections 1 and 3-10 (invariant 12 as a run-time check only) and the
   open items of section 12; not covered: section 2 (the diagram). Per property, bound and
   finding: `tests/formal/README.md`.
