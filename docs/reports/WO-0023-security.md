@@ -1,6 +1,6 @@
 # WO-0023 — security review of the MCP tool surface (security)
 
-Status: **final gate on 382cf02: REWORK (one 🟠, F13) or PASS once the PM accepts F13 as a named residual** (see "Verdict"). Findings go to the PM; fixes are backend work.
+Status: **PASS (b27c2c4, 2026-11-18).** Every finding F1-F13 is fixed or recorded as a named accepted risk; see "Verdict". Commit/push is Ship's.
 
 - Target: commit `0501f50`. The probes ran on a frozen `git archive` copy outside the repo. Its `mesh/*.py` and `.mcp.json` hashes equal the `0501f50` blobs (`git show | sha256sum`, empty diff), and `sha256sum -c` still passed after the runs.
 - Durable evidence (outside the repo): `~/.local/state/supervisor-mesh-security/WO-0023/`
@@ -116,13 +116,25 @@ Lead re-run totals:
 |---|---|---|---|---|---|
 | F13 | 🟠 | `mesh/layers.py:734-746` (`_is_helper`), `:775-792` (`_judge`); `mesh/confirm.py:73-78` | `_is_helper` accepts ANY live pid whose argv[1] is the helper path. A same-user process that runs its own copy of the helper opens the code FIFO first, takes the code and answers. mesh APPROVES while the operator's real popup shows "no code received (D121); refused". D121 counts a stolen code as a *visible failure*, but the failure the operator sees here is a refusal while the action goes through | `F-run.txt`: `test_n1_a_thief_running_its_own_helper_instance` FAIL (approved) | judge only after the `display-popup -E` mesh started has returned; refuse when more than one helper pid ever held either FIFO; refuse when any helper reports "no code" (a third outcome on FIFO 2, or its exit status). This stays same-user (D96/D121), but it turns the misleading case into a refusal |
 
-## Verdict (382cf02)
+## Verdict (382cf02, superseded by the final verdict below)
 **REWORK, one item: F13 🟠.** Every other gate item passes: F1-F12 are fixed, and the D118-D123 controls hold. F13 is inside the stated same-user threat model (D96/D121), so the PM and operator may instead accept it as a named residual next to steal-and-relay. With that decision recorded, or with the fix and a re-run of `test_n1_a_thief_running_its_own_helper_instance`, this order is PASS.
 
-## Delta run (PASS gate) — planned against the WO-0028/WO-0030 commit
-1. Re-run the harness and guard suite. The F1-F10 tests must flip to refusals.
-2. D108: fail closed without a claude pid.
-3. D109/D114: pin, more than one pm, re-pin preconditions (pinned PM still Running, 0 or 2+ live pm, no code).
-4. D110: an older real prompt replayed, and per-entry dedup.
-5. D113: the code never appears in argv, env, files, tmux buffers, options or environment, logs or MCP output. The popup is not readable via `capture-pane`, `display -p` or a second client. The comparison happens in mesh, not through an ok-flag file. Single use, bounded attempts, expiry. The popup opens only on the PM client.
-6. D107: deny rules narrowed and `config.toml` editable. D113 advisory deny rules present.
+## Closing re-run — b27c2c4 (D124, parent 382cf02)
+- Frozen full archive `plug-b27c2c4/`, 62 hashes in `harness/plug-b27c2c4.sha`, `sha256sum -c` OK. The brief-4 suite was copied to `finaltests-b27c2c4/` with only the archive path changed; an import check confirms that `mesh.layers` loads from `plug-b27c2c4/`.
+- Lead run: `Ran 116 tests`, `OK`, exit 0 (`lead-rerun/F2-run.txt`). No `mesh-wt-*` or `mesh-confirm-*` left in /tmp.
+- F13 fixed: `FACT N1: thief helper had the code True; operator's popup showed a code: False (screen says no code: True); confirm -> 'second_writer'`. The thief is refused, and the operator sees the refusal.
+- The D121/D122 set is unchanged and passing: the right code is approved once, and a wrong, missing or timed-out code is refused. Helper failure, a pre-existing FIFO or file, a second writer, an answer after exit and a stolen code are all refused. No plaintext is written, and the dir is removed. Steal-and-relay stays the named ACCEPTED-RISK.
+
+## Final verdict
+**WO-0023 PASS at b27c2c4.**
+
+Accepted risks, by operator or PM decision:
+- D86: privilege commands can be typed when the operator names them.
+- D88: companion sources are unpinned.
+- D96 same-user residuals:
+  - a same-user process can write state.json or append to the transcript;
+  - a forged `agent-hook ingest` (D119; the advisory deny is in place);
+  - keystroke and activation text is recorded as `human`.
+- D99: verify writes outside the worktree, and a setsid child can outlive the run.
+- D121: steal-and-relay.
+- D113/D121 threat model: these controls stop a model acting through mesh tools and the advisory denies, not arbitrary same-user code.
