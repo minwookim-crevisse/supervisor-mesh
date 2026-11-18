@@ -9,7 +9,15 @@ allowed-tools: Read Bash(projmux:*)
 
 Dispatch a task to a role lead over projmux. `$ARGUMENTS` = `<role> <task…>` (first word = role).
 
-## Steps
+## Preferred: the supervisor-mesh MCP server
+When the project was set up with `mesh_init` (it has `.mesh/state.json`) and the `supervisor-mesh` MCP server is connected (`/mcp`), dispatch through the work-item tools instead of composing the message by hand:
+1. The task needs a work item in `ready`: `work_new` (`mcp__plugin_supervisor-mesh_supervisor-mesh__work_new`) with goal, done criteria, role and type, then `work_transition` verb `ready`.
+2. `work_dispatch` (`mcp__plugin_supervisor-mesh_supervisor-mesh__work_dispatch`) with the item id. It prepends the same standard header as step 3 below, resolves the role's live agent (label `role=<role>`, this project's cwd, Running), records the send before it runs and sends it with `projmux agent message send`; a failed send stays pending and the next call replays it with the same message-ref.
+3. Show the tool result (item id, message-ref, `sent`) to the operator. A refusal is an `isError` result naming the reason: report it, do not work around it.
+The tools refuse when the caller is not the PM pane (label `role=pm`). Do NOT auto-spawn here either: no live lead = refused.
+CLI fallback with the same behaviour: `.mesh/bin/mesh work_dispatch --item-id <WO-id>`.
+
+## Fallback: by hand over projmux (no MCP server, or a project without `.mesh/`)
 1. **Resolve the target.** `projmux get agents -o json`; find the item with `metadata.labels.role == <role>` (or named `role-<role>`) whose `spec.workspace.cwd == ${CLAUDE_PROJECT_DIR}` and `status.phase == "Running"`. Never match on the label alone — several repos can share one projmux project.
    No such agent (absent, Offline or Failed) → 🔴 STOP with: "role <role> has no pane — run /supervisor-mesh:spawn-roles (or /supervisor-mesh:add-agent for a new role) first." Do NOT auto-spawn. dispatch is send-only; explicit mesh setup is the ritual (no silent failure, no silent creation).
 2. **Tracker row.** If the project keeps a tracker, confirm the work order has a row. No row = no dispatch (talk-only dispatch is lost work). Only the orchestrator writes the tracker.
@@ -21,6 +29,7 @@ Dispatch a task to a role lead over projmux. `$ARGUMENTS` = `<role> <task…>` (
    Discipline: think before coding, simplicity first, surgical changes, goal-driven.
    Evidence-first DoD: captured command output or exit code; LIVE evidence for render, write, money and auth.
    Constraints: coordination docs are read-only (ask the orchestrator), no secrets or .env content, no worktree-destroying git commands, push is Ship only.
+   Workers: spawn each worker with the label worker-of=<your role> and an explicit last step: it messages you with projmux agent message send, message-ref <WO>-done; then wait with projmux agent wait uid:<worker> --until idle --timeout <duration> instead of polling its transcript.
    Report: PASS only with evidence attached, to the orchestrator.
    ```
 4. **Payload hygiene.** The text goes through a shell: strip backticks, `$` and `$(` from the payload (rephrase code as plain words or reference a file path instead).

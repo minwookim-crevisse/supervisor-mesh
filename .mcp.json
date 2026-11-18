@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "supervisor-mesh": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mesh/mcp_server.py"]
+    }
+  }
+}

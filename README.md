@@ -7,10 +7,10 @@ It does not replace your judgment or write your code. It makes mistakes hard to 
 ## Prerequisites
 Each item: check command, then how to install or upgrade.
 - **projmux** (required) — the pane/message transport the mesh runs on. Check: `projmux --help` must work. Install projmux first (see its own docs); this plugin does not install it. projmux runs on tmux (check: `tmux -V`), so on Windows run everything inside WSL.
-- **python3 ≥ 3.10** (required) — stdlib only, no pip packages. Used by `init` (scaffold), `gc` (drift checks) and `slack-setup` (bridge); TypeScript projects need it too (`init` lays down the Python GC scripts for every stack). Scripts use 3.10 syntax (`X | None`).
-  - Check: `python3 --version` → 3.10 or higher.
-  - Ubuntu / Debian / WSL: `sudo apt update && sudo apt install -y python3` (Ubuntu 22.04+ ships ≥ 3.10). Older releases: the deadsnakes PPA (`python3.12`) or pyenv.
-  - macOS: `brew install python@3.12` (or any ≥ 3.10 formula).
+- **python3 ≥ 3.11** (required) — stdlib only, no pip packages. Used by the MCP server (`mesh/`, which needs `tomllib` and `StrEnum`), `init` (scaffold), `gc` (drift checks) and `slack-setup` (bridge); TypeScript projects need it too (`init` lays down the Python GC scripts for every stack). On an older python3 the MCP server exits with one line saying 3.11 is required.
+  - Check: `python3 --version` → 3.11 or higher.
+  - Ubuntu / Debian / WSL: `sudo apt update && sudo apt install -y python3` (Ubuntu 24.04 ships 3.12; 22.04 ships 3.10, so add the deadsnakes PPA `python3.12` or use pyenv).
+  - macOS: `brew install python@3.12` (or any ≥ 3.11 formula).
   - Native Windows: use WSL (see projmux above).
 - **Claude Code** (required) — check: `claude --version`. `claude plugin --help` must list `marketplace` and `install`.
 - **GitHub access** — while the repo is private, your git/GitHub credentials must be able to read `minwookim-crevisse/supervisor-mesh` (`marketplace add` fetches it from GitHub).
@@ -18,7 +18,7 @@ Each item: check command, then how to install or upgrade.
   - a spec/brainstorm tool (e.g. `ready` / `office-hours`) — shape the spec before scaffolding.
   - plan reviews (e.g. `plan-eng-review` / `plan-ceo-review`).
   - `karpathy-guidelines` — the 4 work-discipline principles this plugin embeds.
-  `/supervisor-mesh:init` detects and points you to these; it never installs or copies them.
+  `/supervisor-mesh:init` detects and points you to these; it never installs or copies them. The MCP tool `companions_install` installs pstack and mattpocock-skills at project scope only when you name the install in a prompt (gstack: it prints the command for you to run).
 
 ## Install
 Order matters: projmux project and Claude pane first, then the plugin from that pane.
@@ -27,9 +27,9 @@ Order matters: projmux project and Claude pane first, then the plugin from that 
    ```
    projmux create project --root <absolute-project-dir>   # register it (no runtime yet); <name> defaults to the dir name
    projmux attach project <name>                          # enter its runtime (inside tmux: projmux open project <name>)
-   projmux create claude --project <name>                 # the Claude pane
+   projmux create claude --project <name> --label role=pm # the Claude pane: your PM
    ```
-   Switch to the new Claude pane and answer the folder-trust prompt once. This pane is your PM/orchestrator session and must be a projmux pane: `dispatch` uses the sender's pane as its projmux identity and refuses outside a managed pane, and `spawn-roles` splits the role panes into this pane's window.
+   Switch to the new Claude pane and answer the folder-trust prompt once. This pane is your PM/orchestrator session and must be a projmux pane labelled `role=pm`: the MCP server identifies the PM by that label (no label = every PM tool is refused and the operator-event hook records nothing), `dispatch` uses the sender's pane as its projmux identity and refuses outside a managed pane, and `spawn-roles` splits the role panes into this pane's window.
 2. **Install the plugin from that pane:**
    ```
    /plugin marketplace add minwookim-crevisse/supervisor-mesh
@@ -54,12 +54,33 @@ Order matters: projmux project and Claude pane first, then the plugin from that 
 /supervisor-mesh:slack-setup   # optional away-mode Slack bridge (token stays in your local .env)
 ```
 
+## MCP server
+The plugin bundles a stdio MCP server, `supervisor-mesh` (`.mcp.json` at the plugin root runs `python3 ${CLAUDE_PLUGIN_ROOT}/mesh/mcp_server.py`; stdlib only, newline-delimited JSON-RPC, logs on stderr). It starts with the plugin; check it with `/mcp`. State lives in the project's `.mesh/state.json`; `docs/tracker.md` becomes a generated view.
+
+| tool | caller | does |
+|---|---|---|
+| `mesh_init` | any (preview), PM (apply) | scaffold + `.mesh/` bootstrap + the PM-pane operator-event hook + a one-time legacy import of `docs/tracker.md`; preview and apply are separate calls (apply needs the preview's `plan_id`) |
+| `mesh_status` | any | items by state, live leads, pending actions, your identity, companion presence, hook launcher health, last operator event (id, seq); read-only |
+| `mesh_metrics` | any | D90 counters: rework per item, PASS reversals, operator interventions; indicative only, never a gate; read-only |
+| `work_list` / `work_show` | any | the items / one item record; read-only |
+| `work_new` | PM | a draft work item |
+| `work_transition` | per table | every other lifecycle verb (`ready`, `start`, `submit`, `verify`, `fail`, `close` …); the transition table decides who may do what |
+| `work_dispatch` | PM | the work order (standard header + contract) to the role lead over `projmux agent message send` |
+| `tracker_render` | PM | regenerate the marked region of `docs/tracker.md` |
+| `pane_command` | PM | type one operator-named slash command into a lead's idle pane |
+| `companions_install` | PM | install the missing pstack / mattpocock-skills at project scope after an operator prompt names the install |
+
+Identity: the caller is the projmux pane the session runs in. The PM is the agent labelled `role=pm` (see Install step 1); a lead is any other `role=<role>` label in this project. Anything else can read but every write is refused and recorded in `.mesh/refusals.jsonl`.
+Operator approval: `mesh_init` adds a `UserPromptSubmit` hook to the project's `.claude/settings.json` that records the operator's prompts in the PM pane (`.mesh/events.jsonl`, gitignored; each event's hash is kept in `.mesh/state.json`, so a line added by hand is never an operator event). Projmux peer messages (`projmux-coordination` envelopes) are never recorded. In a fresh clone (no `.mesh/bin/mesh` yet) the hook does nothing until `mesh_init` runs. `pane_command` and `companions_install` only act on such a recorded prompt that names them; `reply` cites one; `override` cites one that names the item id. A `pane_command` proposal (`propose=true`) returns an id `P-<n>`: only the operator's very next prompt naming that id approves it. The hook records only when it runs under the PM pane's own claude process (checked through `/proc` ancestry against projmux's record of that pane), and `mesh_init` also adds `permissions.deny` rules to the project's `.claude/settings.json` (`Bash(*mesh* event record*)`, `Write(.mesh/**)`, `Edit(.mesh/**)`) so the PM model can neither run the hook command nor write `.mesh/` with its file tools. Verify runs `verify.prepare` first (optional argv, e.g. `npm ci`; a failed prepare is an environment problem, not a defect), and a command's `fail_if_output` regexes turn a passing exit into a failure when its output matches (the TypeScript stack gets `0 modules, 0 dependencies cruised` and `No test files found` by default).
+CLI: the same tools as `.mesh/bin/mesh <tool> --<arg> …` (written by `mesh_init`), e.g. `.mesh/bin/mesh mesh_status`.
+
 ## Skills
 | skill | what it does |
 |---|---|
 | `init` | scaffold the primed 4-pillar structure into the current project (idempotent, non-destructive) |
 | `spawn-roles` | create the mesh role panes over projmux (hard prereq for dispatch) |
 | `dispatch` | send a work order to a role pane; fails loudly if no pane (no auto-spawn) |
+| `run` | `/supervisor-mesh:run <goal>` (D89 goal intake): the PM decomposes one goal into work items, dispatches them in dependency order and gates each on mesh-run evidence |
 | `add-agent` | stamp a new role from the role-lead template into the project's `.claude/agents/` |
 | `gc` | garbage-collect harness drift (code / doc / structure), report-first |
 | `slack-setup` | guided away-mode Slack bridge (connection check, resumable watcher with thread replies, required sender allowlist); the token lives only in your local .env and is sent only as an HTTP header |
@@ -86,6 +107,7 @@ Templates are *primed*: transferable discipline is pre-filled (Part A); only pro
 Harnesses decay. `/supervisor-mesh:gc` + a weekly `housekeeping.yml` detect three drift types — code (dead code), doc (AGENTS.md vs the real tree, deprecated wordings), structure (temp/backup/junk, undisposed one-shot scripts) — and guide cleanup. Detection is read-only; nothing is deleted without your confirmation.
 
 ## Security
+Accepted risks (stated, not solved): verification commands run with argv only, an allowlisted environment and the disposable worktree as cwd, but there is no stdlib sandbox, so a command can still write outside the worktree through an absolute path or `$HOME` (D99; the config is PM-owned and leads already have a shell). The operator-event provenance rests on host rules plus the parent-process check: a process of the same OS user that edits the settings or forges a process tree can still bypass it (D96).
 Secrets and real customer data never go into the plugin, the repo, docs, or logs. Slack tokens live in your local `.env` (gitignored); `slack_bridge.py` reads it at runtime and sends the token only as an HTTP header (never on a command line). Coordination artifacts carry aggregates and counts, not individual records.
 
 ## Self-harness (dogfood)

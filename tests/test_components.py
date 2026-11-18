@@ -2,7 +2,7 @@ import unittest
 
 from _helpers import ROOT, frontmatter, invariant_block
 
-SKILLS = {"init", "spawn-roles", "dispatch", "add-agent", "gc", "slack-setup"}
+SKILLS = {"init", "spawn-roles", "dispatch", "add-agent", "gc", "slack-setup", "run"}
 LEADS = {"fe", "qa", "designer", "backend", "security", "ship"}
 DISCIPLINE = ("Operating model", "Karpathy 4", "Evidence-first gate")
 

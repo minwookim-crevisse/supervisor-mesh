@@ -26,6 +26,7 @@ CONSTANTS
     WithOverride,       \* the operator `override` row
     FollowUpOn,         \* what triggers the (mesh) follow-up row on a closed item (D70):
                         \* "thread reply" (section 9), "revalidate flag" (D60)
+    RejectTriggersInScope, \* scenario scope: the reject triggers in use (D101), a subset of RejectTriggers
     MaxContractVersion, \* exploration bound (CONSTRAINT Bounds)
     MaxAttempts,        \* exploration bound
     MaxSeq,             \* exploration bound on the mesh seq
@@ -68,6 +69,11 @@ Terminal == {"closed", "cancelled"}
 Created == NonTerminal \cup Terminal
 Classes == {"defect", "conflict", "ambiguity", "environment", "limit"}
 MergedCommit == 1000   \* the split parent's merged commit (section 7)
+\* D105: commit lineage.  The base commit of attempt k is BaseOf(k); a commit descends from base b when it is
+\* later on b's lineage (same tens block).  Attempt ids stay below 50, so base + 501 is on another lineage.
+BaseOf(k) == 10 * k
+Descends(c, b) == c > b /\ c \div 10 = b \div 10
+SubmitCommits(i) == {item[i].attempt.base + 1, item[i].attempt.base + 501}
 NotInTable == "not in the transition table"
 
 \* the design's state name, with the blocked reason folded in: "blocked(limit)"
@@ -122,7 +128,7 @@ RowAllows(v, c, s, t) == <<v, c, s>> \in DOMAIN RowTo /\ t \in RowTo[<<v, c, s>>
 -----------------------------------------------------------------------------
 (* Section 3: the item record.                                              *)
 
-NoAttempt == [id |-> 0, commit |-> 0, contract_version |-> 0, config_hash |-> 0]
+NoAttempt == [id |-> 0, base |-> 0, commit |-> 0, contract_version |-> 0, config_hash |-> 0]
 NoFailure == [class |-> "none", reason |-> "none"]
 NoFailingBefore == [contract_version |-> 0, repro |-> 0]
 NoEvidence == [run |-> "none", commit |-> 0, contract_version |-> 0, config_hash |-> 0]
@@ -132,7 +138,7 @@ EmptyItem ==
    attempt |-> NoAttempt,
    retry |-> 0, environment_unblock |-> 0, next_start_free |-> FALSE,
    failure |-> NoFailure, failing_before |-> NoFailingBefore,
-   replies |-> {}, limit_seq |-> 0,
+   replies |-> {}, limit_seq |-> 0, pinned_config |-> 0,
    parent |-> 0, children |-> {}, former_children |-> {}, follows |-> 0,
    revalidate |-> FALSE, evidence |-> NoEvidence]
 GhostInit == [starts |-> 0, unlocks |-> {}, own_verify |-> FALSE,
@@ -304,25 +310,40 @@ LimitEntrySeq == seq + 1
 \* section 5 "way back" from rework through `ready`: conflict (PM revised scope/depends), ambiguity (revised criteria)
 ReadyRoute(i) == item[i].failure.class \in {"conflict", "ambiguity"}
 
+\* D104: the contract revision ready needs from rework / blocked(awaiting_user), by the latest failure class:
+\* conflict -> scope or depends revised, ambiguity -> done criteria revised; no class (dependency_cancelled,
+\* D71) -> no class-specific revision (D81 already forces the cancelled dependency out of depends).  Scope and
+\* done criteria are not record fields here: the PM's revision is a nondeterministic kind, in the step label.
+Revisions == {"scope or depends", "done criteria", "none"}
+RequiredRevision(i) ==
+  CASE item[i].failure.class = "conflict"  -> "scope or depends"
+    [] item[i].failure.class = "ambiguity" -> "done criteria"
+    [] OTHER                               -> "any"
+RevisionOk(i, rev) == RequiredRevision(i) = "any" \/ rev = RequiredRevision(i)
+RevisionChoices(i) == IF StateOf(i) \in {"rework", Blocked("awaiting_user")} THEN Revisions ELSE {"none"}
+RevisedWhy(rev) == "contract complete; revised: " \o rev
+
 ReadyRec(i, D) ==
   [item[i] EXCEPT !.state = "ready", !.blocked_reason = "none",
-     !.contract_version = @ + 1, !.depends = D, !.failure = NoFailure,
+     !.contract_version = @ + 1, !.depends = D, !.failure = NoFailure, !.pinned_config = config_hash,
      !.failing_before = IF i \in BugfixItems
                         THEN [contract_version |-> item[i].contract_version + 1,
                               repro |-> ReproHash(i)]
                         ELSE NoFailingBefore]
 
-\* row: ready | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, none cancelled (D81), no self-dependency, no cycle; bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters
+\* row: ready | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, none cancelled (D81), no self-dependency, no cycle; pins the verification config hash (D100); bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5), with the class-specific revision present (conflict: scope or depends revised; ambiguity: done criteria revised; contract version +1) (D104); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters
 Ready(i) ==
   /\ May(i, "ready")
   /\ StateOf(i) \in {"draft", "rework", Blocked("awaiting_user"), Blocked("limit")}
-  /\ \E D \in DependsChoices, repro \in ReproResults(i) :
+  /\ \E D \in DependsChoices, repro \in ReproResults(i), rev \in RevisionChoices(i) :
        IF ~DependsOk(i, D)
        THEN RefuseStep("pm", "ready", i, "depends: unknown id, self-dependency or cycle")
        ELSE IF CancelledDepends(D)
        THEN RefuseStep("pm", "ready", i, D81Why)
        ELSE IF StateOf(i) = "rework" /\ ~ReadyRoute(i)
        THEN RefuseStep("pm", "ready", i, "class route")
+       ELSE IF StateOf(i) \in {"rework", Blocked("awaiting_user")} /\ ~RevisionOk(i, rev)
+       THEN RefuseStep("pm", "ready", i, "class-specific contract revision missing (D104)")
        ELSE IF repro = "passes"
        THEN RefuseStep("pm", "ready", i, "repro passes at the base commit: not reproduced")
        ELSE IF repro = "not_runnable"
@@ -340,7 +361,9 @@ Ready(i) ==
                       /\ ghost' = [ghost EXCEPT ![i].starts = 0, ![i].unlocks = @ \cup {r.seq}]
                       /\ UNCHANGED <<config_hash, seq, events, live>>
        ELSE LET rec == ReadyRec(i, D)
-            IN /\ Apply(i, rec, L("ready", "pm", i, rec, "contract complete"))
+            IN /\ Apply(i, rec, L("ready", "pm", i, rec,
+                                 IF StateOf(i) \in {"rework", Blocked("awaiting_user")} THEN RevisedWhy(rev)
+                                 ELSE "contract complete"))
                /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 \* row: dispatch | pm | ready | ready | assigned role; message-ref | none
@@ -351,11 +374,14 @@ Dispatch(i) ==
 
 DependsSatisfied(i) == \A d \in item[i].depends : item[d].state \in {"verified", "closed"}
 
-\* row: start | lead (own role) | ready | running | every dependency verified or closed; agent live; new attempt id; records contract version + verification config hash | retry +1 for every attempt after the first, except the first after an environment unblock or a limit resume; over the limit -> blocked(limit) + Slack question
+\* row: start | lead (own role) | ready | running | every dependency verified or closed; agent live; new attempt id; records contract version; verification config hash must equal the one pinned at ready (D100), else refused as inputs_changed | retry +1 for every attempt after the first, except the first after an environment unblock or a limit resume; over the limit -> blocked(limit) + Slack question
 Start(i, p) ==
   /\ May(i, "start") /\ StateOf(i) = "ready" /\ live[i] /\ Idle(p)
   /\ IF ~DependsSatisfied(i)
      THEN /\ Refused(Lead, "start", p, i, "dependency not verified or closed")
+          /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
+     ELSE IF config_hash # item[i].pinned_config
+     THEN /\ Refused(Lead, "start", p, i, "inputs_changed: config hash differs from the one pinned at ready (D100)")
           /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
      ELSE LET counted == item[i].attempt.id > 0 /\ ~item[i].next_start_free
               retry == IF counted THEN item[i].retry + 1 ELSE item[i].retry
@@ -373,7 +399,8 @@ Start(i, p) ==
                      /\ UNCHANGED <<config_hash, events, live, refusals>>
              ELSE LET rec == [item[i] EXCEPT !.state = "running", !.retry = retry,
                                 !.next_start_free = FALSE,
-                                !.attempt = [id |-> item[i].attempt.id + 1, commit |-> 0,
+                                !.attempt = [id |-> item[i].attempt.id + 1,
+                                             base |-> BaseOf(item[i].attempt.id + 1), commit |-> 0,
                                              contract_version |-> item[i].contract_version,
                                              config_hash |-> config_hash]]
                   IN /\ Write1(i, rec)
@@ -385,17 +412,23 @@ Start(i, p) ==
                      /\ ghost' = [ghost EXCEPT ![i].starts = @ + 1]
                      /\ UNCHANGED <<config_hash, seq, events, live, refusals>>
 
-\* row: submit | lead (own role) | running | verifying | current attempt id; changed commit | none
+\* row: submit | lead (own role) | running | verifying | current attempt id; changed commit that descends from the attempt's base commit (D105) | none
+\* (commit lineage over small integers: the attempt's base is BaseOf(id), recorded at start; a lead submits a
+\* descendant base + 1 or an unrelated commit base + 501, on another lineage)
 Submit(i, p) ==
   /\ May(i, "submit") /\ StateOf(i) = "running" /\ live[i] /\ Idle(p)
-  /\ IF Owns(p, i)
-     THEN LET rec == [item[i] EXCEPT !.state = "verifying", !.attempt.commit = item[i].attempt.id]
-          IN /\ Write1(i, rec)
-             /\ pane' = DirtyFor({i}, "submit")
-             /\ step' = StepRec("submit", Lead, p, i, StateOf(i), PS(rec), FALSE, "changed commit")
-             /\ UNCHANGED <<config_hash, seq, events, live, ghost, refusals>>
-     ELSE /\ Refused(Lead, "submit", p, i, "older attempt id")
-          /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
+  /\ \E c \in SubmitCommits(i) :
+       IF Owns(p, i)
+       THEN IF Descends(c, item[i].attempt.base)
+            THEN LET rec == [item[i] EXCEPT !.state = "verifying", !.attempt.commit = c]
+                 IN /\ Write1(i, rec)
+                    /\ pane' = DirtyFor({i}, "submit")
+                    /\ step' = StepRec("submit", Lead, p, i, StateOf(i), PS(rec), FALSE, "changed commit")
+                    /\ UNCHANGED <<config_hash, seq, events, live, ghost, refusals>>
+            ELSE /\ Refused(Lead, "submit", p, i, "commit does not descend from the attempt's base commit (D105)")
+                 /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
+       ELSE /\ Refused(Lead, "submit", p, i, "older attempt id")
+            /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
 
 \* The contract-version half of InputsUnchanged and FailingBeforeOk are structurally implied
 \* here (both change only at `ready`, which running/verifying cannot take); README, inv 6.
@@ -487,13 +520,13 @@ Fail(i, c, p, cls, why) ==
                                                    ELSE "older attempt id")
           /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
 
-\* row: reassign | pm | rework | ready | class route (section 5); no dependency cancelled (D81) | none (counted at start)
+\* row: reassign | pm | rework | ready | class route (section 5); no dependency cancelled (D81); re-pins the verification config hash (D106) | none (counted at start)
 Reassign(i) ==
   /\ May(i, "reassign") /\ StateOf(i) = "rework"
   /\ IF CancelledDepends(item[i].depends)
      THEN RefuseStep("pm", "reassign", i, D81Why)
      ELSE IF item[i].failure.class = "defect"
-     THEN LET rec == [item[i] EXCEPT !.state = "ready", !.failure = NoFailure]
+     THEN LET rec == [item[i] EXCEPT !.state = "ready", !.failure = NoFailure, !.pinned_config = config_hash]
           IN /\ Apply(i, rec, L("reassign", "pm", i, rec, "class route: defect"))
              /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
      ELSE RefuseStep("pm", "reassign", i, "class route")
@@ -580,9 +613,9 @@ EnvOverLimit(i, e) ==
      !.limit_seq = LimitEntrySeq, !.failure = [class |-> "limit", reason |-> "environment"]]
 UnblockedRec(i, e) ==
   [item[i] EXCEPT !.state = "ready", !.blocked_reason = "none", !.environment_unblock = e,
-     !.next_start_free = TRUE, !.failure = NoFailure]
+     !.next_start_free = TRUE, !.failure = NoFailure, !.pinned_config = config_hash]
 
-\* row: unblock | pm | blocked(environment) | ready | precheck passes; no dependency cancelled (D81); a refused precheck is a guard refusal and writes nothing to the item (D68) | environment +1 per passing unblock (D68); over its limit (default 3) -> blocked(limit) + Slack question
+\* row: unblock | pm | blocked(environment) | ready | precheck passes; no dependency cancelled (D81); re-pins the verification config hash (D106); a refused precheck is a guard refusal and writes nothing to the item (D68) | environment +1 per passing unblock (D68); over its limit (default 3) -> blocked(limit) + Slack question
 Unblock(i, precheck) ==
   /\ May(i, "unblock") /\ StateOf(i) = Blocked("environment")
   /\ IF precheck = "passes" /\ CancelledDepends(item[i].depends)
@@ -602,15 +635,17 @@ Unblock(i, precheck) ==
                   /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
      ELSE RefuseStep("pm", "unblock", i, "precheck refused")
 
-\* row: reject | pm | verified | rework, or blocked(awaiting_user) for --class ambiguity | --class required (defect, conflict, ambiguity; defect for a revalidate flag); failure record (D65) | none
-\* (the trigger stays an attached reply, any of the three classes, or a revalidate flag, class defect)
-Reject(i, cls) ==
+\* row: reject | pm | verified | rework, or blocked(awaiting_user) for --class ambiguity | --class required (defect, conflict, ambiguity; defect for a revalidate flag); trigger: an attached reply, a revalidate flag, or the PM's own evidence review with a written reason (D101); failure record (D65) | none
+RejectTriggers == {"reply", "revalidate flag", "review"}
+ReviewWhy(cls) == cls \o ": own evidence review with a written reason (D101)"
+Reject(i, cls, trig) ==
   /\ May(i, "reject") /\ StateOf(i) = "verified"
-  /\ \/ cls \in {"defect", "conflict", "ambiguity"} /\ item[i].replies # {}
-     \/ cls = "defect" /\ item[i].revalidate
+  /\ \/ trig = "reply" /\ item[i].replies # {}
+     \/ trig = "revalidate flag" /\ cls = "defect" /\ item[i].revalidate
+     \/ trig = "review"
   /\ LET rec == [item[i] EXCEPT !.state = RouteOf(cls).state, !.blocked_reason = RouteOf(cls).blocked_reason,
                    !.failure = [class |-> cls, reason |-> "none"]]
-     IN Apply(i, rec, L("reject", "pm", i, rec, cls))
+     IN Apply(i, rec, L("reject", "pm", i, rec, IF trig = "review" THEN ReviewWhy(cls) ELSE cls))
   /\ ghost' = [ghost EXCEPT ![i].own_verify = FALSE]
   /\ UNCHANGED <<config_hash, seq, events, live>>
 
@@ -697,7 +732,8 @@ Next ==
        \/ Split(i)
        \/ MeshChildrenClosed(i) \/ MeshParentVerify(i) \/ MeshCancelledChild(i)
        \/ StateOf(i) = Blocked("environment") /\ \E pc \in {"passes", "refused"} : Unblock(i, pc)
-       \/ StateOf(i) = "verified" /\ \E cls \in {"defect", "conflict", "ambiguity"} : Reject(i, cls)
+       \/ StateOf(i) = "verified" /\ \E cls \in {"defect", "conflict", "ambiguity"}, t \in RejectTriggersInScope :
+            Reject(i, cls, t)
        \/ Ack(i) \/ Close(i) \/ Cancel(i) \/ Revalidate(i)
        \/ MaxEvents > 0 /\ \E e \in 1..MaxEvents : Reply(i, e)
        \/ WithOverride /\ \E t \in Created : Override(i, t)
@@ -820,7 +856,7 @@ Progress(i) ==
   \/ Reassign(i) \/ Split(i)
   \/ MeshChildrenClosed(i) \/ MeshParentVerify(i) \/ MeshCancelledChild(i)
   \/ \E pc \in {"passes", "refused"} : Unblock(i, pc)
-  \/ \E cls \in {"defect", "conflict", "ambiguity"} : Reject(i, cls)
+  \/ \E cls \in {"defect", "conflict", "ambiguity"}, t \in RejectTriggersInScope : Reject(i, cls, t)
   \/ Close(i)
 Moves(i) == PS(item'[i]) # StateOf(i)
 Waiting(i) ==
@@ -881,6 +917,29 @@ VerifiedBound ==
        /\ (ev.run = "attempt" /\ i \in BugfixItems)
             => item[i].failing_before = [contract_version |-> item[i].contract_version,
                                          repro |-> ReproHash(i)]
+
+\* D104: ready from rework / blocked(awaiting_user) carries the revision the latest failure class needs.
+ReadyRevisesByClass ==
+  [][\A i \in Items : (/\ step'.verb = "ready" /\ ~step'.refused /\ step'.item_id = i
+                        /\ StateOf(i) \in {"rework", Blocked("awaiting_user")} /\ PS(item'[i]) = "ready"
+                        /\ RequiredRevision(i) # "any")
+                        => step'.why = RevisedWhy(RequiredRevision(i))]_vars
+
+\* D105: every submitted commit descends from the attempt's base commit.
+SubmitDescendsFromBase ==
+  [][\A i \in Items : (StateOf(i) = "running" /\ PS(item'[i]) = "verifying")
+                        => Descends(item'[i].attempt.commit, item'[i].attempt.base)]_vars
+
+\* D106: every PM verb that enters ready (ready, reassign, unblock) pins the current verification config hash.
+PinnedOnEnteringReady ==
+  [][\A i \in Items : (/\ step'.verb \in {"ready", "reassign", "unblock"} /\ ~step'.refused
+                        /\ step'.item_id = i /\ PS(item'[i]) = "ready")
+                        => item'[i].pinned_config = config_hash]_vars
+
+\* D100: no attempt starts under a verification config hash other than the one pinned at ready.
+StartUnderPinnedConfig ==
+  [][\A i \in Items : (StateOf(i) = "ready" /\ PS(item'[i]) = "running")
+                        => item'[i].attempt.config_hash = item[i].pinned_config]_vars
 
 \* Invariant 7: closed never happens with unacknowledged replies or a revalidate flag.
 CloseGates ==
@@ -1004,6 +1063,17 @@ NoRow_override         == [][~Fires("override", "operator", Created, Created)]_v
 -----------------------------------------------------------------------------
 (* Decision probes (README, resolved findings): each states a behaviour a   *)
 (* WO-0016 finding showed missing; under D65-D76 each holds.                 *)
+
+\* D101: in every reachable state the PM can reject a verified item on its own evidence review, with
+\* any of the three classes, without an attached reply or a revalidate flag.
+ReviewRejectEnabled ==
+  \A i \in Items : (StateOf(i) = "verified" /\ May(i, "reject"))
+    => \A cls \in {"defect", "conflict", "ambiguity"} : ENABLED Reject(i, cls, "review")
+\* D101 witness, expected VIOLATED: a reject on the PM's own review fires (not a NoRow_ probe: the
+\* trigger is a guard of the reject row, not a row outcome of its own).
+NoReviewReject ==
+  [][~(step'.verb = "reject" /\ ~step'.refused
+       /\ \E cls \in {"defect", "conflict", "ambiguity"} : step'.why = ReviewWhy(cls))]_vars
 
 \* D65 (was G1): every failure record sends the item where section 5 routes its class.
 RouteByClass ==

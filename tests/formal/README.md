@@ -1,9 +1,9 @@
 # Formal model: work-item state machine (TLA+)
 
 `WorkItemState.tla` models the mesh work-item state machine of
-`docs/designs/work-item-state-model.md` (sections 1-10, decisions D40-D76 and D81; why each
-row exists: the review records in `docs/designs/pm-led-onboarding.md`, D65-D76 in "Formal
-verification findings", D81 in section 11 of the design). There is no `mesh/` code yet, so the design document is the
+`docs/designs/work-item-state-model.md` (sections 1-10, decisions D40-D76, D81 and
+D100-D106; why each row exists: the review records in `docs/designs/pm-led-onboarding.md`,
+D65-D76 in "Formal verification findings", D81 and D100-D106 in section 11 of the design). There is no `mesh/` code yet, so the design document is the
 target: the spec is a second adapter of the section-4 transition table, beside the
 future `mesh/state.py`. The constant `Table` holds the section-4 rows as data, one entry
 per row outcome and nothing else; the (mesh) rows share the verb `mesh` and differ by
@@ -20,14 +20,14 @@ bug from a design bug and update the model: `.claude/skills/verify-work-item-sta
 | file | content |
 |---|---|
 | `WorkItemState.tla` | the spec: item record, every section-4 row, refusals, properties, row probes, decision probes |
-| `Core.cfg` | one bugfix item, every single-item path except replies: routes, counters (D68), revalidate flag (D69), lead loss |
+| `Core.cfg` | one bugfix item, every single-item path except replies: routes, counters (D68), config hash pinned when entering ready (D100, D106), revalidate flag (D69), reject on the PM's own review (D101), class-specific revision at ready (D104), commit lineage at submit (D105), lead loss |
 | `Replies.cfg` | Slack replies + operator events from the PM terminal; ack/close gates; reject --class (D65); limit resume ordered by the one mesh seq (D74) |
 | `Split.cfg` | parent split into two children: failures[] kept (D75), cascade cancel of children (D66), (mesh) parent verify rows (D72) |
 | `Resplit.cfg` | a split parent with room for a re-split after a cancelled child (D66, D67) |
 | `Deps.cfg` | three items with depends: unknown ids, self, cycles and cancelled dependencies refused at ready (D81), satisfied by verified/closed; a cancel moves ready dependents (D71) |
 | `DepsRoutes.cfg` | two items; reassign and unblock refuse a dependency cancelled while the item was out of ready (D81) |
 | `Cas.cfg` | one bugfix item, two lead panes run verify as read-check / unlocked commands / compare-and-set write on the attempt-relevant fields (D76), one config edit |
-| `TableWalk.cfg` | operator override drives one item through every state but blocked(limit) (D73), which start reaches; every unlisted verb x caller must be refusable there |
+| `TableWalk.cfg` | operator override drives one item through every state but blocked(limit) (D73), which start reaches after a ready (D100 pin); every unlisted verb x caller must be refusable there |
 | `FollowUp.cfg` | the (mesh) follow-up row (D70): a closed item gets a follow-up draft for a thread reply or a revalidate flag |
 | `FollowUpFlag.cfg` | FollowUp with the revalidate-flag trigger only (row coverage of that trigger) |
 | `variants.py` | the variant definitions (edits + one target property + one scenario each), their runner, the TLC trace printer and the last-step signature |
@@ -53,6 +53,12 @@ the last step its counterexample must end with.
 | inv 4 | `LimitOnlyByMesh`: only the mesh counters enter blocked(limit) or record class limit, override included (D73) | action | Core, Replies, Split, Resplit, TableWalk | holds |
 | inv 5 | `BoundedStarts`: starts between counter resets <= 1 + RetryLimit + EnvLimit | state | Core, Replies, Split, Resplit, Deps, DepsRoutes | holds |
 | inv 6 | `VerifiedBound`: verified binds the submitted commit, contract version, attempt config hash, failing_before | state | every scenario but TableWalk | holds |
+| s4, D100 | `StartUnderPinnedConfig`: no attempt starts under a verification config hash other than the one pinned at ready | action | Core, Replies, Deps, DepsRoutes, Cas | holds |
+| s4, D104 | `ReadyRevisesByClass`: ready from rework / blocked(awaiting_user) carries the revision the latest failure class needs (conflict: scope or depends; ambiguity: done criteria) | action | Core, Replies, Split, Resplit, Deps, DepsRoutes, Cas | holds |
+| s4, D105 | `SubmitDescendsFromBase`: every submitted commit descends from the attempt's base commit | action | Core, Replies, Split, Resplit, Deps, DepsRoutes, Cas | holds |
+| s4, D106 | `PinnedOnEnteringReady`: ready, reassign and unblock into ready pin the current verification config hash | action | Core, Replies, Split, Resplit, Deps, DepsRoutes, Cas | holds |
+| s4, D101 | `ReviewRejectEnabled`: in every reachable state the PM can reject a verified item on its own evidence review, with any of the three classes, without a reply or a flag | state (ENABLED) | Core, Replies, DepsRoutes | holds |
+| s4, D101 | `NoReviewReject`: a reject on the PM's own review never fires (a guard of the reject row, not a row outcome, so not a `NoRow_` probe) | action | Core (reject-review) | violated = REACHED |
 | inv 7 | `CloseGates`: close never with unacknowledged replies or a revalidate flag | action | every scenario but Cas, TableWalk | holds |
 | inv 8 | `StartNeedsDepends`, `DependsWellFormed`: start needs verified/closed dependencies; no unknown, self or cyclic depends past ready | action, state | Core, Deps, DepsRoutes | holds |
 | inv 8 | `DependsNotCancelledAtReady`: ready, reassign and unblock never return an item to ready with a cancelled dependency (D81) | action | Deps, DepsRoutes | holds |
@@ -97,7 +103,8 @@ routes, fail by the pm, reassign, split, (mesh) children done, (mesh) child canc
 (mesh) parent verify pass and fail, (mesh) dependency cancelled (inside the cancelling
 write: its probe looks at the dependents a cancel moves), (mesh) follow-up for a
 thread reply and for a revalidate flag, unblock to ready and to blocked(limit), reject
-to rework and to blocked(awaiting_user), ack, close, cancel, revalidate, override). A row
+to rework and to blocked(awaiting_user), ack, close, cancel, revalidate, override). The
+reject row's D101 trigger (the PM's own review) fires in run reject-review. A row
 whose guard can no longer hold turns its run UNEXPECTED. A lead step needs the assigned
 lead pane live (D45), so the pm `fail` row is the only way out of running or verifying
 while the lead is dead; variant `inv2-dead-pm-fail` shows `NoDeadItem` failing without it.
@@ -108,7 +115,7 @@ Reproduced on every run; each counterexample is printed by `scripts/formal-check
 
 None. The last one, inv 14 (`deps-inv14`, WO-0020), was decided as D81 (below).
 
-## Resolved findings (WO-0016 decided D65-D76; WO-0020 decided D81)
+## Resolved findings (WO-0016 decided D65-D76; WO-0020 decided D81; WO-0022 review and WO-0027 decided D100-D106)
 
 Each former finding now holds in the real spec; its decision is protected by a broken
 variant that restores the old behaviour and must FAIL with the named property.
@@ -132,6 +139,11 @@ variant that restores the old behaviour and must FAIL with the named property.
 | inv 14 FINDING (WO-0020 deps-inv14) | D81 ready refuses a cancelled dependency | `NoWaitOnCancelled`, inv 14 (Deps) | `d81-ready-accepts-cancelled-dependency` |
 | (by reading in WO-0020) | D81 reassign refuses it | `DependsNotCancelledAtReady`, inv 8 (DepsRoutes) | `d81-reassign-keeps-cancelled-dependency` |
 | (by reading in WO-0020) | D81 unblock refuses it | `NoWaitOnCancelled`, inv 14 (DepsRoutes) | `d81-unblock-keeps-cancelled-dependency` |
+| WO-0022 review P5 | D100 config hash pinned at ready | `StartUnderPinnedConfig` (Core, Replies, Deps, DepsRoutes, Cas) | `d100-start-ignores-pinned-config` |
+| WO-0022 review P6 | D101 reject on the PM's own review | `ReviewRejectEnabled` (Core, Replies, DepsRoutes); witness reject-review | `d101-reject-needs-reply-or-flag` |
+| WO-0022 review F17 | D104 class-specific revision at ready | `ReadyRevisesByClass` (Core, ...) | `d104-ready-without-class-revision` |
+| WO-0022 review F21 | D105 submit descends from the base commit | `SubmitDescendsFromBase` (Core, ...) | `d105-submit-any-commit` |
+| WO-0027 question | D106 reassign and unblock re-pin the config hash | `PinnedOnEnteringReady` (Core, ...) | `d106-reassign-unblock-keep-old-pin` |
 
 The open-item constants of the WO-0016 model (`O38`, `O39`, `SplitFailure`, `ClockTies`)
 and their scenarios (CoreO39Refused, RepliesClockTies, SplitConsumed, SplitStayLinked,
@@ -155,6 +167,10 @@ SplitUnlink) are gone: the decided alternative is the model.
 | s4 cascades (cancel, (mesh) child cancelled, D66, D71); D81 guards | `CascadeWrite` ((mesh) dependency cancelled row); `CancelledDepends` in Ready, Reassign, Unblock | NoOrphanChildren (inv 13), DependentsBlockedOnCancel, NoWaitOnCancelled (inv 14), DependsNotCancelledAtReady (inv 8) |
 | s4 override row | `Override` (TableWalk only), not to blocked(limit) (D73) | LimitOnlyByMesh in TableWalk (inv 4) |
 | s7 evidence binding | `VerifiedRec`, `InputsUnchanged`, `FailingBeforeOk`, `MergedCommit` | VerifiedBound (inv 6), FlagClearedByReverify (inv 15) |
+| s4 config hash pinned by every verb into ready, start refuses a changed one (D100, D106) | `pinned_config`, set by `ReadyRec`, `Reassign`, `UnblockedRec`; `Start` | StartUnderPinnedConfig, PinnedOnEnteringReady; VerifiedBound still covers an edit after start |
+| s4 ready: class-specific revision (D104) | `RequiredRevision`, `RevisionOk`, `RevisionChoices` (step label) | ReadyRevisesByClass |
+| s4 submit: commit descends from the attempt's base (D105) | `attempt.base`, `BaseOf`, `Descends`, `SubmitCommits` | SubmitDescendsFromBase |
+| s4 reject triggers: reply, revalidate flag, the PM's own review (D101) | `Reject(i, cls, trig)`, `RejectTriggers`; per scenario `RejectTriggersInScope` (Deps: no review) | ReviewRejectEnabled, NoReviewReject (witness), RouteByClass (D65) |
 | s8 lock + CAS on attempt-relevant fields, older attempts (verify only) | `VerifyRead`, `VerifyWrite`, `AttemptFields`, `Owns`, ghosts `pane.dirty`, `pane.dirty_by` | StaleNeverWritten (inv 11), ReplyNeverDiscardsVerify (D76), scenario Cas |
 | s9 reply on a closed item; D60 flag on a closed item | `FollowUp` ((mesh) follow-up row, D70) | TableOnly in FollowUp, FollowUpFlag; row-mesh-follow-up* |
 | s10 inv 1-11, 13-15 | the properties above | see `EXPECT` in `scripts/formal-check.sh` |
@@ -189,15 +205,15 @@ tree (HEAD, `git status`, dirty-file sha256).
 
 | scenario | items | retry / env limit | replies / events | other bounds | distinct states |
 |---|---|---|---|---|---|
-| Core | 1 bugfix | 1 / 1 | 0 / 0 | 1 config edit, lead loss, contract version <= 3, attempts <= 4 | 7,272 |
-| Replies | 1 | 0 / 0 | 2 / 1 | contract version <= 3, attempts <= 3, seq <= 4 | 21,373 |
+| Core | 1 bugfix | 1 / 1 | 0 / 0 | 1 config edit, lead loss, contract version <= 3, attempts <= 4 | 14,703 |
+| Replies | 1 | 0 / 0 | 2 / 1 | contract version <= 3, attempts <= 3, seq <= 4 | 28,560 |
 | Split | 3 (parent + 2 children) | 0 / 0 | 0 / 0 | attempts <= 2 | 808 |
 | Resplit | 5 (parent + 2 + 2 children) | 0 / 0 | 0 / 0 | attempts <= 2, at most two cancelled items (one cancel + its cascade) | 2,993 |
-| Deps | 3 | 0 / 0 | 0 / 0 | contract version <= 1, attempts <= 1 | 38,897 |
-| DepsRoutes | 2 | 0 / 1 | 0 / 0 | contract version <= 1, attempts <= 2, seq <= 1 | 12,153 |
-| Cas | 1 bugfix, 2 lead panes | 1 / 1 | 1 / 0 | 1 config edit, lead loss, attempts <= 3, record version <= 12 | 22,170 |
-| TableWalk | 1 bugfix + override + start | 0 / 0 | 1 / 0 | contract version <= 1, attempts <= 1 | 35 |
-| FollowUp, FollowUpFlag | 2 (item + follow-up slot) | 0 / 0 | 0 / 0 | attempts <= 2 | 476 / 286 |
+| Deps | 3 | 0 / 0 | 0 / 0 | contract version <= 1, attempts <= 1; reject only on a revalidate flag (no review trigger) | 38,897 |
+| DepsRoutes | 2 | 0 / 1 | 0 / 0 | contract version <= 1, attempts <= 2, seq <= 1 | 25,537 |
+| Cas | 1 bugfix, 2 lead panes | 1 / 1 | 1 / 0 | 1 config edit, lead loss, attempts <= 3, record version <= 12 | 23,786 |
+| TableWalk | 1 bugfix + override + ready + start | 0 / 0 | 1 / 0 | contract version <= 1, attempts <= 1 | 46 |
+| FollowUp, FollowUpFlag | 2 (item + follow-up slot) | 0 / 0 | 0 / 0 | attempts <= 2 | 621 / 373 |
 
 The design default for the environment limit is 3 and the retry limit is config; the
 properties are written in terms of the limits, so larger limits only lengthen the same
@@ -211,8 +227,12 @@ Bounds`). `NoDeadItem` is checked only where the verb scope holds every way out 
 states the scenario reaches; in a cut scope (Deps, DepsRoutes, Cas, Resplit, TableWalk, FollowUp)
 dead items exist by construction. TableWalk runs without lead loss: which combinations
 the table lists does not depend on it, and `UnlistedRefused` costs one ENABLED
-evaluation per unlisted combination and state; it has `start` in scope only to reach
-blocked(limit), which override may no longer enter (D73).
+evaluation per unlisted combination and state. Deps leaves the reject row's D101 review
+trigger out of scope (`RejectTriggersInScope`): with it Deps had 245,187 distinct and 5.9
+million generated states (about 9 min), without it 38,897 and 0.4 million (under 1 min);
+Core, Replies and DepsRoutes keep it. TableWalk has `ready` and `start` in scope only to
+reach blocked(limit), which override may no longer enter (D73); `ready` is needed since
+D100, because only it pins the config hash that `start` requires.
 
 ## Abstractions and assumptions
 
@@ -227,9 +247,26 @@ blocked(limit), which override may no longer enter (D73).
   row records no failure of its own). `ready`, `reassign` and `unblock` start a new
   episode and the model's `failure` field (the record that routes the current rework)
   is then empty; the history is not modelled.
-- `reject` keeps its trigger: an attached reply (any of the three classes) or a
-  revalidate flag (class defect). The D65 row says only "`--class` required (defect,
-  conflict, ambiguity; `defect` for a revalidate flag)".
+- `reject` has three triggers (D101): an attached reply (any of the three classes), a
+  revalidate flag (class defect) and the PM's own evidence review with a written reason
+  (any class; the reason is the step label). The review trigger is always available on
+  a verified item, so reject is enabled there in every state.
+- D100's "else refused as `inputs_changed`" is a guard refusal that writes nothing, like
+  `verify`'s `inputs_changed` (D68, D81): the item stays in ready, and the way out is
+  `revise` and a new `ready`, which pins the current hash again. `reassign` and `unblock`
+  pin too (D106; a limit resume is a `ready`), so an item that returns to ready after a
+  config edit starts without a revise. The model edits the config at any time, also
+  between a pin and `start`; that `start` is then refused.
+- D104: scope and done criteria are not record fields. The PM's revision at `ready` from
+  rework / blocked(awaiting_user) is a nondeterministic kind ("scope or depends", "done
+  criteria", "none"), recorded only in the step label; the guard compares it with the
+  latest failure class. A blocked(awaiting_user) entered by `dependency_cancelled` (D71)
+  has no failure class, so no class-specific revision is required there: D81 already
+  forces the cancelled dependency out of depends. The contract version +1 is `ready`'s.
+- D105: commit lineage over small integers. Attempt k's base commit is `10 * k`, recorded
+  at `start`; a commit descends from base b when it is later in b's block of ten. A lead
+  submits a descendant (b + 1) or an unrelated commit (b + 501, another lineage), and the
+  unrelated one is refused. History rewrites, merges and the base moving are not modelled.
 - A cancel and the (mesh) child cancelled row cancel the active children and move the
   ready dependents of everything they cancel in the same write (`CascadeWrite`), so
   invariants 13 and 14 hold after that write. With D81 (ready, reassign and unblock
@@ -278,7 +315,8 @@ The pinned tools are checked on every run: the sha256 of `tla2tools.jar` and one
 over a manifest of every file of the extracted JRE (paths, link targets, owner-executable
 bits, file contents); the published archive sha256 is checked at install.
 
-Measured on the development machine (16 cores shared with other jobs): 1 min 30 s wall
-for the 67 runs of the check at the default parallelism (4 jobs), 1 min 30 s for the 44
+Measured on the development machine (16 cores shared with other jobs): 3 min 7 s wall
+for the 68 runs of the check at the default parallelism (4 jobs), 2 min 2 s for the 49
 variants (one TLC job at a time). With the default parallelism (`nproc / 4`, between 2
-and 6 jobs) several runs go at once; the largest runs (Deps, Cas, Replies) dominate.
+and 6 jobs) several runs go at once; the largest runs (Replies, DepsRoutes, Deps, Cas)
+dominate.

@@ -26,11 +26,14 @@
 | WO-0019 | Commit batch V final (skill fixes, WO-0016/0017 reports, tracker) and PUSH main to origin (operator OK 2026-10-26) | ship | WO-0016, WO-0017 | pass (692c02a; commit by ship, push run by operator after worker push was permission-denied; origin/main = 692c02a) | — |
 | WO-0020 | Re-sync TLA+ model to D65-D76, `docs/work-orders/2026-10-29-state-model-resync.md` | qa | — | pass (PM gate 2026-11-18: make formal 67 runs 0 FINDING 0 UNEXPECTED; variants 44/44; make check 0; D81 added) | `docs/reports/WO-0020-qa.md` |
 | WO-0021 | init step 6 privacy fix + preview/apply rule, same work order | backend | — (∥ WO-0020) | pass (PM-checked 2026-10-29: 7 companion tests OK; helper prints presence only; ruff not installed, lint unproven) | `docs/reports/WO-0021-backend.md` |
-| WO-0022 | mesh package + stdio MCP server (MVP 0.2.0), `docs/work-orders/2026-11-18-mcp-mvp.md` | backend | — (∥ WO-0020) | dispatched | `docs/reports/WO-0022-backend.md` |
-| WO-0023 | Security review of the MCP tool surface, same work order | security | WO-0022 | waiting | `docs/reports/WO-0023-security.md` |
-| WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | waiting | `docs/reports/WO-0024-qa.md` |
+| WO-0022 | mesh package + stdio MCP server (MVP 0.2.0), `docs/work-orders/2026-11-18-mcp-mvp.md` | backend | — (∥ WO-0020) | pass (PM gate 2026-11-18: make check 0, 531 tests; validate 0; stdio probe 11 tools; G-4 -> WO-0028) | `docs/reports/WO-0022-backend.md` |
+| WO-0023 | Security review of the MCP tool surface, same work order | security | WO-0022 | dispatched | `docs/reports/WO-0023-security.md` |
+| WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | dispatched | `docs/reports/WO-0024-qa.md` |
 | WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | waiting | — |
-| WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | dispatched | — |
+| WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | pass (65af1b8 pushed by ship; origin/main = 65af1b8, PM-verified) | — |
+| WO-0027 | Re-sync TLA+ model to D100 (config hash at ready) + D101 (PM self-review reject), `docs/work-orders/2026-10-29-state-model-resync.md` method | qa | — (∥ WO-0022) | pass (PM gate 2026-11-18: make formal 68 runs 0 FINDING 0 UNEXPECTED; variants 49/49; D100-D106; unit gate excludes 3 W5-touched modules, full make check re-run after W5) | `docs/reports/WO-0027-qa.md` |
+| WO-0028 | D107: narrow the D96 deny rule to .mesh/state.json, events.jsonl, refusals.jsonl (config.toml stays editable; D100 pins it) | backend | WO-0029 | waiting | `docs/reports/WO-0022-backend.md` (addendum) |
+| WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | dispatched | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).
 
@@ -39,5 +42,6 @@ Batch 3 = WO-0005-S (security, read-only) ∥ WO-0005-Q (qa: tests/test_slack.py
 Batch V = WO-0016 ∥ WO-0017 (qa lead, disjoint files; integration gate = PM runs `make check` + `make formal`). Gate 2026-10-26: make check 0, make formal 0, smv selftest 0, scrub 0. Durable QA evidence: `~/.local/state/supervisor-mesh-qa/` (scratchpad is wiped on reboot).
 Design findings G1-G8, F1, F2, O3-8, O3-9, inv 10, N1 decided 2026-10-29 (D65-D76). Batch W = WO-0020 ∥ WO-0021 (integration gate = PM runs `make check` + `make formal`).
 Batch M (MCP MVP 0.2.0, spec `docs/designs/mcp-server-spec.md`, D77-D80): WO-0020 ∥ WO-0022 → WO-0023 ∥ WO-0024 → PM gate (make check + make formal + live evidence) → WO-0025.
+Pilot (operator 2026-11-18): project `mesh-pilot` = Tiny Ledger (TS split-expense library + CLI). First 1-2 items run on 0.1.2 as the baseline (manual tracker); the rest on 0.2.0 (MCP). Compare rework count, PASS reversals and operator interventions; result feeds WO-0024.
 Follow-ups (not dispatched): smv.py package split, FakeSlack helper, shared role lookup, formal runner/probes module, 5 skill doc notes (qa); live runs of the other five features and `marketplace remove` (qa).
 Design for WO-0009..0015: `docs/designs/pm-led-onboarding.md` (APPROVED 2026-10-14).

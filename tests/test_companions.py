@@ -13,8 +13,11 @@ COMPANIONS = ["ready", "office-hours", "plan-eng-review", "karpathy-guidelines"]
 UNRELATED = ["secret-tool", "private-mkt", "hidden-helper", "corp-internal", "zz-distinct-install-dir", "9.9.9-rc"]
 
 
-def run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=30)
+def run(*args: str, home: Path | None = None) -> subprocess.CompletedProcess:
+    """`--home` always points at a temp dir: the real ~/.claude/skills is never consulted by a test."""
+    with tempfile.TemporaryDirectory() as empty:
+        argv = [*args, "--home", str(home or empty)]
+        return subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, text=True, timeout=30)
 
 
 def expected(installed: set[str]) -> list[str]:
@@ -82,6 +85,32 @@ class CompanionsTests(unittest.TestCase):
             path = self.dir / "registry.json"
             path.write_text(body, encoding="utf-8")
             self.assert_clean(run("--registry", str(path)), set())
+
+
+    def skill(self, base: Path, name: str) -> Path:
+        (base / name).mkdir(parents=True)
+        (base / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+        return base / name
+
+    def test_a_gstack_skill_under_the_home_skills_dir_counts(self):
+        home = self.dir / "home"
+        self.skill(home / ".claude" / "skills" / "gstack", "office-hours")
+        registry = self.dir / "nope.json"
+        self.assert_clean(run("--registry", str(registry), home=home), {"office-hours"})
+
+    def test_a_symlinked_skill_dir_counts(self):
+        home = self.dir / "home"
+        target = self.skill(self.dir / "zz-distinct-install-dir", "pe")
+        (home / ".claude" / "skills").mkdir(parents=True)
+        (home / ".claude" / "skills" / "plan-eng-review").symlink_to(target, target_is_directory=True)
+        self.assert_clean(run("--registry", str(self.dir / "nope.json"), home=home), {"plan-eng-review"})
+
+    def test_the_default_registry_is_under_home(self):
+        home = self.dir / "home"
+        (home / ".claude" / "plugins").mkdir(parents=True)
+        reg = {"plugins": {"secret-tool@private-mkt": [{"installPath": self.plugin_dir("st", ["ready"])}]}}
+        (home / ".claude" / "plugins" / "installed_plugins.json").write_text(json.dumps(reg), encoding="utf-8")
+        self.assert_clean(run(home=home), {"ready"})
 
 
 class SkillTextTests(unittest.TestCase):

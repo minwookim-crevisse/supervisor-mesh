@@ -76,13 +76,13 @@ One declarative table in `mesh/state.py`; the CLI and the tests read the same ta
 | `attach` | slack watcher | any except closed, cancelled | unchanged | thread map; notifies the PM; never releases a block | none |
 | `reply` | pm | any except closed, cancelled | unchanged | cites an operator event id recorded by the PM-pane prompt hook (section 9a); attaches it as a reply; never releases a block (D64) | none |
 | `revise` | pm | ready | draft | reason; next `ready` bumps the contract version | none |
-| `ready` | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, none cancelled (D81), no self-dependency, no cycle; bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters |
+| `ready` | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, none cancelled (D81), no self-dependency, no cycle; pins the verification config hash (D100); bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5), with the class-specific revision present (conflict: scope or depends revised; ambiguity: done criteria revised; contract version +1) (D104); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters |
 | `dispatch` | pm | ready | ready | assigned role; message-ref | none |
-| `start` | lead (own role) | ready | running | every dependency verified or closed; agent live; new attempt id; records contract version + verification config hash | retry +1 for every attempt after the first, except the first after an environment unblock or a limit resume; over the limit -> blocked(limit) + Slack question |
-| `submit` | lead (own role) | running | verifying | current attempt id; changed commit | none |
+| `start` | lead (own role) | ready | running | every dependency verified or closed; agent live; new attempt id; records contract version; verification config hash must equal the one pinned at `ready` (D100), else refused as `inputs_changed` | retry +1 for every attempt after the first, except the first after an environment unblock or a limit resume; over the limit -> blocked(limit) + Slack question |
+| `submit` | lead (own role) | running | verifying | current attempt id; changed commit that descends from the attempt's base commit (D105) | none |
 | `verify` | lead (own role); mesh runs commands | verifying | verified | all commands pass on the submitted commit; type evidence present; bugfix failing-before matches the current contract version and repro hash; config hash and inputs unchanged, else refused as `inputs_changed`; clears a revalidate flag (D69) | none |
 | `fail` | lead (own role): defect, conflict, ambiguity, environment; pm: environment only when the lead is absent or dead | running, verifying | per class (section 5) | failure record: class + evidence | none |
-| `reassign` | pm | rework | ready | class route (section 5); no dependency cancelled (D81) | none (counted at `start`) |
+| `reassign` | pm | rework | ready | class route (section 5); no dependency cancelled (D81); re-pins the verification config hash (D106) | none (counted at `start`) |
 | `split` | pm | rework (conflict, reason `too_large`) | blocked(children) | at least two child drafts linked by `parent`; already-cancelled children move to `former_children[]` (D67); `failures[]` kept (D75) | none |
 | (mesh) children done | mesh | blocked(children) | verifying | every linked child closed | none |
 | (mesh) child cancelled | mesh | blocked(children) | rework | a linked child is cancelled; remaining active children of the parent -> cancelled (reason `parent_rework`); the cancelled child is unlinked to `former_children[]` at the next `split` (D66, D67) | none |
@@ -90,8 +90,8 @@ One declarative table in `mesh/state.py`; the CLI and the tests read the same ta
 | (mesh) parent verify fail | mesh | verifying (split parent) | rework | failure record class `defect` (D72) | none |
 | (mesh) dependency cancelled | mesh | ready | blocked(awaiting_user) | an item in `depends` was cancelled; reason `dependency_cancelled` (D71) | none |
 | (mesh) follow-up | mesh | closed | unchanged | a Slack thread reply (section 9) or a revalidate flag on a closed item creates one new `draft` with `follows` (D70) | none |
-| `unblock` | pm | blocked(environment) | ready | precheck passes; no dependency cancelled (D81); a refused precheck is a guard refusal and writes nothing to the item (D68) | environment +1 per passing unblock (D68); over its limit (default 3) -> blocked(limit) + Slack question |
-| `reject` | pm | verified | rework, or blocked(awaiting_user) for `--class ambiguity` | `--class` required (defect, conflict, ambiguity; `defect` for a revalidate flag); failure record (D65) | none |
+| `unblock` | pm | blocked(environment) | ready | precheck passes; no dependency cancelled (D81); re-pins the verification config hash (D106); a refused precheck is a guard refusal and writes nothing to the item (D68) | environment +1 per passing unblock (D68); over its limit (default 3) -> blocked(limit) + Slack question |
+| `reject` | pm | verified | rework, or blocked(awaiting_user) for `--class ambiguity` | `--class` required (defect, conflict, ambiguity; `defect` for a revalidate flag); trigger: an attached reply, a revalidate flag, or the PM's own evidence review with a written reason (D101); failure record (D65) | none |
 | `ack` | pm | any non-terminal state with attached replies | unchanged | marks replies acknowledged | none |
 | `close` | pm | verified | closed | no unacknowledged replies; no revalidate flag | none |
 | `cancel` | pm | any except closed | cancelled | reason; on a split parent its active children -> cancelled (reason `parent_cancelled`, D66); dependents in `ready` -> blocked(awaiting_user) (D71) | none |
@@ -202,6 +202,11 @@ Invariants 2, 3 and 8 can be checked mechanically by walking the table (graph se
 | D74 (inv 10, G7) | one mesh `seq` orders replies and limit entry; external clocks are reference only |
 | D75 (G2a) | `split` keeps `failures[]` (append-only) |
 | D76 (N1) | verification CAS compares attempt-relevant fields only; reply-side writes do not discard it |
+| D106 (WO-0027 question) | every PM verb that enters `ready` (`ready`, `reassign`, `unblock`) pins the current verification config hash; a config-only change needs no revise |
+| D104 (WO-0022 review F17) | `ready` from rework/awaiting_user requires the class-specific contract revision |
+| D105 (WO-0022 review F21) | `submit` requires a commit descending from the attempt's base commit |
+| D100 (WO-0022 review P5) | verification config hash pinned at `ready`; `start` refuses a changed config |
+| D101 (WO-0022 review P6) | PM may `reject` on its own evidence review (reason + class required) |
 | D81 (WO-0020 deps-inv14) | `ready`, `reassign`, `unblock` refuse a cancelled dependency; inv 14 stays strict |
 
 ## 12. Open items

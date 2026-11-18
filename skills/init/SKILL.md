@@ -12,7 +12,15 @@ Scaffold the harness 4 pillars into the CURRENT project (`${CLAUDE_PROJECT_DIR}`
 
 Templates are **primed**: transferable discipline is pre-filled as opinionated defaults with `why:` comments; only project facts are left as `<...>` blanks (Part B).
 
-## Steps
+## Preferred: the supervisor-mesh MCP server
+When the `supervisor-mesh` MCP server is connected (`/mcp`), run init through `mesh_init` (`mcp__plugin_supervisor-mesh_supervisor-mesh__mesh_init`). It runs the same scaffold as the steps below and also bootstraps `.mesh/` (state, config, the `.mesh/bin/mesh` launcher, the PM-pane `UserPromptSubmit` operator-event hook and the `permissions.deny` rules for the hook command and `.mesh/**` merged into `.claude/settings.json`; for stack `ts` the config carries the `fail_if_output` defaults) and imports an existing `docs/tracker.md` once as legacy rows (raw text kept, never verified, the file untouched).
+- **Preview and apply are separate calls.** First call `mesh_init` with `stack` and no `apply`: it writes nothing and returns the rows (CREATE / MERGE / SKIP), the legacy import mapping, the companion presence and install plan, and a `plan_id`. Show that to the operator verbatim. Only then call `mesh_init` again with `apply: true` and that `plan_id`; a project that changed in between is refused (`plan_changed`): preview again.
+- **The PM pane must be labelled.** Apply (and every PM tool) is refused unless this pane is the projmux agent labelled `role=pm`. If the result says so, tell the operator to start the PM pane with `projmux create claude --project <name> --label role=pm`, and stop.
+- **Companions.** The result shows presence only (booleans). For missing pstack / mattpocock-skills it shows the D88 install plan (project scope only); installing needs the operator to name `companions_install` (or one plugin name) in a prompt, then a `companions_install` call (`mcp__plugin_supervisor-mesh_supervisor-mesh__companions_install`) with that prompt's event id. gstack is printed as a command for the operator to run.
+- Show the captured tool result, not a paraphrase. Then continue with step 5 (Part B) and step 7.
+CLI fallback with the same behaviour: `.mesh/bin/mesh mesh_init --stack <stack>` once `.mesh/` exists; before that, the scaffold steps below.
+
+## Steps (fallback: no MCP server)
 1. **Detect stack.** `package.json` → TypeScript (eslint + dependency-cruiser); `pyproject.toml` → Python (ruff + import-linter + mypy). If `$ARGUMENTS` names a stack, use it. If neither or both exist, ask the operator ONE question (ts / python / none) — do not guess.
 2. **Preview** (no writes):
    `python3 "${CLAUDE_PLUGIN_ROOT}/skills/init/scaffold.py" --target "${CLAUDE_PROJECT_DIR}" --stack <stack> --dry-run`
@@ -26,7 +34,7 @@ Templates are **primed**: transferable discipline is pre-filled as opinionated d
    - `.gitignore` — secret/junk lines (.env, .auth/, *.sqlite …) appended if missing.
 4. **Show the captured script output** (CREATE / MERGE / SKIP per file + summary line) to the operator verbatim. That output is the evidence; do not paraphrase it into "done".
 5. **Part B checklist.** Point the operator at `docs/harness/part-b-checklist.md`: project name, role list, ship role, production data anchor, data boundary globs, domain terms, test runner, audit invariants. NEVER invent these values — ask, or leave the `<...>` blank.
-6. **Companions (detect, never install).** Run `python3 "${CLAUDE_PLUGIN_ROOT}/skills/init/companions.py"` and report its lines (`companion <name>: installed|missing`) for the recommended companions: a spec/brainstorm tool (`ready`, `office-hours`), plan reviews (`plan-eng-review`), `karpathy-guidelines`. Do not read, cat or print the plugin registry or any other user config yourself — the helper checks presence by name only and prints nothing else. For missing ones, say where they come from; do not copy or install them.
+6. **Companions (detect, never install).** Run `python3 "${CLAUDE_PLUGIN_ROOT}/skills/init/companions.py"` and report its lines (`companion <name>: installed|missing`) for the recommended companions: a spec/brainstorm tool (`ready`, `office-hours`), plan reviews (`plan-eng-review`), `karpathy-guidelines`. Do not read, cat or print the plugin registry or any other user config yourself — the helper checks presence by name only and prints nothing else. For missing ones, say where they come from; do not copy or install them. This helper and these steps never install anything; installing the D88 companions is only the separate, operator-approved `companions_install` call above.
 7. **Next step.** Shape the spec with the companion spec tool (if any) → fill Part B → `/supervisor-mesh:spawn-roles` → `/supervisor-mesh:dispatch`.
 
 ## Guardrails

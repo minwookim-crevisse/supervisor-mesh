@@ -23,7 +23,7 @@ read the changed sections 1-10, update the model (section 4 below), then move
 the sync point.
 
 Not hashed, so check by reading:
-- A decision in `docs/designs/pm-led-onboarding.md` (D40-D81) that changes E2.
+- A decision in `docs/designs/pm-led-onboarding.md` (D40-D106) that changes E2.
 - Once it exists: the transition table, guards, counters, reply handling or the state
   write in `mesh/state.py` (compare its table row by row with `Table`).
 - Once these files are committed, `git log --oneline <sync commit>..HEAD --
@@ -162,11 +162,11 @@ alternatives (as WO-0020 did for O3-8, O3-9, G2a and ClockTies).
 
 ## 5. Sync record
 
-- Sync commit: none yet. The design file was uncommitted at sync time (HEAD `692c02a`,
-  WO-0020, D65-D76 and D81); the lead moves this line to the commit that carries it once
-  Ship commits it.
+- Sync commit: none yet. The design file was uncommitted at sync time (HEAD `65af1b8`;
+  WO-0027, D100-D106); the lead moves this line to the commit that carries it once Ship
+  commits it.
 - Design file `docs/designs/work-item-state-model.md` sha256
-  `56b25c9fbf3c5433afadb08ad472d4e83f33d5dd21c690e1b125d0b0b63fc11c`; the same value
+  `713a13a6394eb56c524c65bfa4924ea35253ccbd99e0386d82a5479bb9353157`; the same value
   is `DESIGN_SHA256` in `scripts/formal-check.sh`. The hash decides, not the commit.
 - Covered: design sections 1 and 3-10 (invariant 12 as a run-time check only); section
   12 has no open items. Not covered: section 2 (the diagram). Per property, bound and

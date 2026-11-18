@@ -14,7 +14,8 @@ one scenario cfg. Expected TLC outcome per kind:
                   and so does every property of the scenario (a fix may not break another one)
   reading   PASS  the other reading of an ambiguous row: the finding's property holds under it,
                   together with every property of the scenario
-(The d65-d81 variants restore the behaviour before decisions D65-D76 and D81, one to three per decision.)
+(The d65-d105 variants restore the behaviour before decisions D65-D76, D81 and D100-D106, one to
+three per decision.)
 Each variant runs in its own dir inside formal-check.sh's work dir, one TLC job at a time. The dir
 (spec copy, run.cfg, tlc.log, trace.json) is removed when the variant behaves as expected; it is
 kept, and its path printed, when it does not, or for every variant with --keep (FORMAL_KEEP=1).
@@ -46,8 +47,9 @@ var("inv1-tableonly-close-from-verifying", "broken", "Core", "PROPERTY TableOnly
       '/\\ May(i, "close") /\\ StateOf(i) \\in {"verified", "verifying"}')],
     "close also accepted from verifying (a row the table does not have)")
 var("inv1-tableonly-reads-the-state-diff", "broken", "Core", "PROPERTY TableOnly",
-    [('     IN Apply(i, rec, L("reject", "pm", i, rec, cls))',
-      '     IN Apply(i, [rec EXCEPT !.state = "ready", !.blocked_reason = "none"], L("reject", "pm", i, rec, cls))')],
+    [('     IN Apply(i, rec, L("reject", "pm", i, rec, IF trig = "review" THEN ReviewWhy(cls) ELSE cls))',
+      '     IN Apply(i, [rec EXCEPT !.state = "ready", !.blocked_reason = "none"],\n'
+      '              L("reject", "pm", i, rec, IF trig = "review" THEN ReviewWhy(cls) ELSE cls))')],
     "reject writes ready while its step label still says rework (the label is not the state diff)")
 var("inv1-tableonly-split-child-not-draft", "broken", "Split", "PROPERTY TableOnly",
     [('ELSE IF j \\in C THEN [EmptyItem EXCEPT !.state = "draft", !.parent = i]',
@@ -104,7 +106,7 @@ var("inv4-lead-fails-with-limit", "broken", "Core", "PROPERTY LimitOnlyByMesh",
 var("inv5-retry-counted-at-reassign", "broken", "Core", "INVARIANT BoundedStarts",
     [("LET counted == item[i].attempt.id > 0 /\\ ~item[i].next_start_free",
       "LET counted == FALSE"),
-     ('     THEN LET rec == [item[i] EXCEPT !.state = "ready", !.failure = NoFailure]\n'
+     ('     THEN LET rec == [item[i] EXCEPT !.state = "ready", !.failure = NoFailure, !.pinned_config = config_hash]\n'
       '          IN /\\ Apply(i, rec, L("reassign", "pm", i, rec, "class route: defect"))',
       '     THEN LET over == item[i].retry + 1 > RetryLimit\n'
       '              rec == IF over\n'
@@ -161,7 +163,7 @@ var("inv11-cas-compares-attempt-id-only", "broken", "Cas", "PROPERTY StaleNeverW
       "IF item[i].attempt.id = pane[p].read_attempt")],
     "the verify write re-checks the attempt id but not state, contract version and submitted commit")
 var("inv11-submit-ignores-attempt-id", "broken", "Cas", "PROPERTY StaleNeverWritten",
-    [("  /\\ IF Owns(p, i)\n", "  /\\ IF TRUE\n")],
+    [("       IF Owns(p, i)\n", "       IF TRUE\n")],
     "submit from a pane whose attempt is not the current one is accepted (older attempt ids, section 8)")
 var("typeok-cancel-keeps-reason", "broken", "Core", "INVARIANT TypeOK",
     [('LET rec == [item[i] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]',
@@ -236,6 +238,28 @@ var("d81-reassign-keeps-cancelled-dependency", "broken", "DepsRoutes", "PROPERTY
 var("d81-unblock-keeps-cancelled-dependency", "broken", "DepsRoutes", "INVARIANT NoWaitOnCancelled",
     [('  /\\ IF precheck = "passes" /\\ CancelledDepends(item[i].depends)', '  /\\ IF FALSE')],
     "pre-D81: unblock returns to ready with a dependency cancelled while the item was blocked(environment)")
+
+var("d100-start-ignores-pinned-config", "broken", "Core", "PROPERTY StartUnderPinnedConfig",
+    [("     ELSE IF config_hash # item[i].pinned_config\n", "     ELSE IF FALSE\n")],
+    "pre-D100: start records whatever config hash is current, not the one pinned at ready")
+var("d101-reject-needs-reply-or-flag", "broken", "Core", "INVARIANT ReviewRejectEnabled",
+    [('     \\/ trig = "review"\n', '     \\/ FALSE\n')],
+    "pre-D101: reject needs an attached reply or a revalidate flag; the PM's own review is no trigger")
+
+var("d104-ready-without-class-revision", "broken", "Core", "PROPERTY ReadyRevisesByClass",
+    [('       ELSE IF StateOf(i) \\in {"rework", Blocked("awaiting_user")} /\\ ~RevisionOk(i, rev)\n',
+      '       ELSE IF FALSE\n')],
+    "pre-D104: ready from rework / awaiting_user accepts a contract without the class-specific revision")
+var("d105-submit-any-commit", "broken", "Core", "PROPERTY SubmitDescendsFromBase",
+    [("       THEN IF Descends(c, item[i].attempt.base)\n", "       THEN IF TRUE\n")],
+    "pre-D105: submit accepts a commit that does not descend from the attempt's base commit")
+
+var("d106-reassign-unblock-keep-old-pin", "broken", "Core", "PROPERTY PinnedOnEnteringReady",
+    [('!.state = "ready", !.failure = NoFailure, !.pinned_config = config_hash]\n          IN',
+      '!.state = "ready", !.failure = NoFailure]\n          IN'),
+     ("     !.next_start_free = TRUE, !.failure = NoFailure, !.pinned_config = config_hash]\n",
+      "     !.next_start_free = TRUE, !.failure = NoFailure]\n")],
+    "pre-D106 (D100 as first decided): reassign and unblock keep the pin of the last ready")
 
 EXPECTED = {"broken": "FAIL", "nowit": "PASS", "fixed": "PASS", "reading": "PASS"}
 

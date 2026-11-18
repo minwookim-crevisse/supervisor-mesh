@@ -5,10 +5,10 @@ import contextlib
 import io
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
-import tomllib
 from _helpers import ROOT
 
 sys.path.insert(0, str(ROOT / "skills/init"))

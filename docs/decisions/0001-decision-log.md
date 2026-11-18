@@ -3,6 +3,13 @@
 > Single owner: the Orchestrator writes this. Others propose via their report file.
 > This log OUTRANKS every other doc on conflict. Newest decision wins.
 
+## DEC-0015 — Companion install on operator approval (supersedes DEC-0003 in part)
+- Date: 2026-11-18
+- Status: accepted
+- Context: the MCP server (0.2.0) should make a new project ready in one pass; the operator asked that pstack, mattpocock-skills and gstack be installable when the MCP server is set up.
+- Decision: companions stay unbundled (DEC-0003 kept), but `mesh_init` may install pstack and mattpocock-skills at project scope after an operator approval that names the install (spec D88, D85). gstack is not a Claude plugin: init prints its install command only. mesh never changes user scope.
+- Consequences: DEC-0003's "init only detects" no longer holds for these two plugins; other companions are still detect-only. Unpinned marketplace sources are an accepted risk; installed versions are recorded.
+
 ## DEC-0014 — One standard minimum layout, built by init and dogfooded here
 - Date: 2026-10-19
 - Status: accepted
@@ -82,7 +89,7 @@
 
 ## DEC-0003 — Third-party skills are companions, never bundled
 - Date: 2026-10-14
-- Status: accepted
+- Status: accepted; superseded in part by DEC-0015 (install on operator approval)
 - Context: bundling spec/review/discipline skills from other plugins risks forks, drift and license issues.
 - Decision: README documents them as companion plugins; `init` only detects and points to them.
 - Consequences: this plugin implements only harness-specific wiring and the spec → scaffold hand-off.

@@ -50,7 +50,7 @@ TOOLS="${TLA_TOOLS_DIR:-$HOME/.local/share/tlaplus}"
 
 # Sync point: the design version the model describes (the skill's sync record names it too).
 DESIGN="$ROOT/docs/designs/work-item-state-model.md"
-DESIGN_SHA256="56b25c9fbf3c5433afadb08ad472d4e83f33d5dd21c690e1b125d0b0b63fc11c"
+DESIGN_SHA256="713a13a6394eb56c524c65bfa4924ea35253ccbd99e0386d82a5479bb9353157"
 
 # Pinned toolchain. JRE_SHA256 is the published Temurin archive (checked at install);
 # JRE_TREE_SHA256 is the manifest of that archive's extracted files (jre_tree_sha: every
@@ -72,7 +72,8 @@ JAVA_OPTS="${FORMAL_JAVA_OPTS:--XX:+UseParallelGC -XX:ParallelGCThreads=2 -XX:Ti
 #   kind: check -> PASS, witness -> REACHED, finding -> FINDING, reading -> READING,
 #         structural -> STRUCTURAL, note -> NOTE
 EXPECT=$(cat <<'TABLE'
-core                     | Core             | -                                          | pass                                     | -                                                                                                                    | check D68 D69
+core                     | Core             | -                                          | pass                                     | -                                                                                                                    | check D68 D69 D100 D101 D104-D106
+reject-review            | Core             | PROPERTY NoReviewReject                    | violate:NoReviewReject                   | pm reject item 1: verified -> rework                                                                                 | witness D101: reject on the PM's own review fires
 replies                  | Replies          | -                                          | pass                                     | -                                                                                                                    | check D65 D74
 split                    | Split            | -                                          | pass                                     | -                                                                                                                    | check D66 D72 D75
 resplit                  | Resplit          | -                                          | pass                                     | -                                                                                                                    | check D66 D67
@@ -100,7 +101,7 @@ exit-draft               | Replies          | PROPERTY NoExit_draft             
 exit-ready               | Replies          | PROPERTY NoExit_ready                      | violate:NoExit_ready                     | lead (own role) start item 1: ready -> running                                                                       | witness inv 2
 exit-running             | Replies          | PROPERTY NoExit_running                    | violate:NoExit_running                   | lead (own role) submit item 1: running -> verifying                                                                  | witness inv 2
 exit-verifying           | Replies          | PROPERTY NoExit_verifying                  | violate:NoExit_verifying                 | lead (own role) verify item 1: verifying -> verified                                                                 | witness inv 2
-exit-verified            | Replies          | PROPERTY NoExit_verified                   | violate:NoExit_verified                  | pm close item 1: verified -> closed                                                                                  | witness inv 2
+exit-verified            | Replies          | PROPERTY NoExit_verified                   | violate:NoExit_verified                  | pm reject item 1: verified -> rework                                                                                  | witness inv 2
 exit-rework              | Replies          | PROPERTY NoExit_rework                     | violate:NoExit_rework                    | pm reassign item 1: rework -> ready                                                                                  | witness inv 2
 exit-awaiting            | Replies          | PROPERTY NoExit_blocked_awaiting_user      | violate:NoExit_blocked_awaiting_user     | pm ready item 1: blocked(awaiting_user) -> ready                                                                     | witness inv 2
 exit-environment         | Replies          | PROPERTY NoExit_blocked_environment        | violate:NoExit_blocked_environment       | pm unblock item 1: blocked(environment) -> blocked(limit)                                                            | witness inv 2
