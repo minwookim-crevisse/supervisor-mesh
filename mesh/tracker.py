@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import layers
-from .model import Doc, InvalidArgs, LegacyRow, MeshError
+from .model import ITEM_ID_PATTERN, Doc, InvalidArgs, LegacyRow, MeshError
 
 __all__ = ["BEGIN", "END", "InvalidArgs", "Preview", "Rendered", "parse_legacy", "render_region", "render_file"]
 
@@ -49,7 +49,7 @@ STATUS_WORDS = {
     "n/a": "n/a",
 }  # fmt: skip
 EMPTY = {"", "—", "–", "-", "none", "n/a"}
-_ID = r"WO-\d{4,}"
+_ID = ITEM_ID_PATTERN
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +118,7 @@ def parse_depends(raw: str) -> tuple[str, ...]:
     text = re.sub(r"\([^)]*\)", " ", raw)  # notes in parentheses
     text = re.sub(rf"∥\s*{_ID}", " ", text)  # parallel to, not depends on
     out: list[str] = []
-    for m in re.finditer(rf"({_ID})(?:\.\.(?:WO-)?(\d+))?", text):
+    for m in re.finditer(rf"({_ID})(?:\.\.(?:WO-)?([0-9]+))?", text):
         start = m.group(1)
         if m.group(2):
             lo, hi, width = int(start[3:]), int(m.group(2)), len(start) - 3

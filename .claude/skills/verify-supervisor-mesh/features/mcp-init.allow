@@ -1,0 +1,21 @@
+# What mesh_init apply (stack none) changes in an empty scratch project, at commit a1bb251 (WO-0024 live run 1):
+# 16 files plus the state lock file (F11), and the hook and deny rules merged into the scratch settings.
+# Used by features/mcp.md: "$SMV" hash-diff pre-mcp post-init --allow-file <this file>. Re-check after templates change.
+ADDED .github/workflows/housekeeping.yml
+ADDED .gitignore
+ADDED .mesh/.gitignore
+ADDED .mesh/bin/mesh
+ADDED .mesh/config.toml
+ADDED .mesh/state.json
+ADDED .mesh/state.lock
+ADDED AGENTS.md
+ADDED docs/conventions/constraints.md
+ADDED docs/conventions/glossary.md
+ADDED docs/decisions/0001-decision-log.md
+ADDED docs/harness/part-b-checklist.md
+ADDED scripts/audit.sh
+ADDED scripts/gc/README.md
+ADDED scripts/gc/check_docs_drift.py
+ADDED scripts/gc/check_structure.py
+ADDED tests/README.md
+CHANGED .claude/settings.json

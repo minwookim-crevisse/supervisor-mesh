@@ -63,8 +63,10 @@ class Engine:
         facts: FactsProvider | None = None,
         cfg: Config | None = None,
         on_commit: CommitHook | None = None,
+        prover: layers.Prover | None = None,
     ):
         self.store = store
+        self.prover = prover  # D123: the cite-time transcript proof of a candidate operator event
         self.facts = facts or no_facts
         self.cfg = cfg  # None: re-read .mesh/config.toml on every call
         self.on_commit = on_commit
@@ -147,7 +149,7 @@ class Engine:
                 observed[key] = facts
         if Fact.OPERATOR_EVENT in needs:
             cited = getattr(req.args, "event_id", None)
-            facts = replace(facts, operator_event=EventFact(layers.resolve_event(self.store, cited)))
+            facts = replace(facts, operator_event=EventFact(layers.resolve_event(self.store, cited, self.prover)))
         else:
             facts = replace(facts, operator_event=None)  # never from a provider
         return facts

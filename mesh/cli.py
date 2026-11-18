@@ -13,9 +13,10 @@ anything structured (lists, objects) is JSON. `--json` supplies the whole argume
 UserPromptSubmit event with a session id, the prompt is not a projmux coordination envelope (a peer message), the
 caller is a role=pm pane of this project (D82) whose claude process is an ancestor of this process (D96, hook_error
 `parent_not_pm_claude`), exactly one live role=pm agent exists (D109, `pm_ambiguous`), the agent is the pinned PM
-(`pm_not_pinned`, `not_pinned_pm`) and the session the PM session (`session_not_pm`; the first proven prompt pins it),
-and the prompt equals the LATEST real user prompt of the hook's transcript, an entry not used before (D110,
-`transcript_refused`, `prompt_not_in_transcript`, `transcript_entry_reused`). A `re-pin <own agent uid>` prompt from a
+(`pm_not_pinned`, `not_pinned_pm`), the hook's session id and transcript path are that agent's live ones as projmux
+reports them on THIS event (D118, `session_not_pm`; projmux unavailable is `projmux_unavailable`: fail closed). It is
+recorded as a CANDIDATE (D123: Claude writes the prompt's transcript entry only after the hook returns): the D110
+transcript proof runs when a tool first cites it (`layers.resolve_event`). A `re-pin <own agent uid>` prompt from a
 role=pm pane is recorded as a pending re-pin instead (D114: mesh_init apply decides; `re_pin_not_self` when it names
 another uid). Anything else records nothing. It prints nothing (a UserPromptSubmit hook's stdout would join the
 prompt) and exits 0 on every error, leaving a `hook_error` line (a fixed code, never a value) in .mesh/events.jsonl.
@@ -152,22 +153,21 @@ def operator_prompt(payload) -> str | None:
 RE_PIN = "re-pin"
 
 
-def hook_decision(doc, agent_uid: str, session: str, prompt: str) -> tuple[str | None, str]:
-    """D109 / D110 on a (fresh) document: (hook_error code or None, kind). kind "event": an ordinary operator event
-    of the pinned PM; "pin_session": the same, and it pins the PM session (none pinned yet); "re_pin": the
-    operator's `re-pin <own uid>` from a role=pm pane, recorded as a pending re-pin (D114: mesh_init apply decides)."""
+def hook_decision(doc, agent_uid: str, prompt: str) -> tuple[str | None, str]:
+    """D109 on a (fresh) document: (hook_error code or None, kind). kind "event": an ordinary operator event of the
+    pinned PM; "re_pin": the operator's `re-pin <own uid>` from a role=pm pane that is not the pinned one, recorded
+    as a pending re-pin (D114: mesh_init apply decides). The session is never pinned here (D118): `record_event`
+    checks it against projmux on every event."""
     if layers.names(prompt, RE_PIN):
         if not layers.names(prompt, agent_uid):
             return "re_pin_not_self", "re_pin"
-        if doc.pm_uid != agent_uid or session != doc.pm_session:
+        if doc.pm_uid != agent_uid:
             return None, "re_pin"
     if doc.pm_uid is None:
         return "pm_not_pinned", "event"
     if doc.pm_uid != agent_uid:
         return "not_pinned_pm", "event"
-    if doc.pm_session is None:
-        return None, "pin_session"
-    return (None, "event") if session == doc.pm_session else ("session_not_pm", "event")
+    return None, "event"
 
 
 def record_event(env, stdin) -> int:
@@ -181,7 +181,8 @@ def record_event(env, stdin) -> int:
         prompt = operator_prompt(payload)
         if prompt is None:
             return 0
-        who = identity.resolve(env, root, Projmux(env))
+        pmx = Projmux(env)
+        who = identity.resolve(env, root, pmx)
         if who.caller.kind is not CallerKind.PM:
             return 0  # a lead's or an unlabelled pane: never an operator event
         if not identity.descends_from(os.getpid(), who.claude_pid):  # D96: run by the PM pane's own claude
@@ -190,24 +191,23 @@ def record_event(env, stdin) -> int:
         if who.live_pms != 1:  # D109: two role=pm agents (a relabelled lead) are never the operator's PM
             store.append_hook_error(at, "pm_ambiguous")
             return 0
-        uid, session = who.caller.agent_uid, payload["session_id"]
-        why, _ = hook_decision(store.read().doc, uid, session, prompt)
-        if why is None:
-            entry, why = layers.prompt_proof(payload, prompt, root, env)  # D110: the operator typed it
+        uid = who.caller.agent_uid
+        why, _ = hook_decision(store.read().doc, uid, prompt)
+        if why is None:  # D118: the live session projmux reports for this (pinned, or re-pinning) PM agent
+            why = layers.session_proof(payload, pmx.claude_session, uid)
         if why is not None:
             store.append_hook_error(at, why)
             return 0
 
         def edit(doc, event):
-            _, kind = hook_decision(doc, uid, session, prompt)
-            if kind == "pin_session":
-                return replace(doc, pm_session=session)
-            if kind == "re_pin":
-                return replace(doc, pm_repin=RePin(event.id, uid, session))
-            return doc
+            _, kind = hook_decision(doc, uid, prompt)
+            return replace(doc, pm_repin=RePin(event.id, uid)) if kind == "re_pin" else doc
 
+        # D123: a CANDIDATE (Claude writes the transcript entry only after this hook returns); its D110 proof runs
+        # when a tool first cites it. Only the hash of the (D118-checked) session id is kept
+        candidate = layers.session_sha256(payload["session_id"])
         store.record_operator_event(
-            prompt, at, uid, entry=entry, check=lambda doc: hook_decision(doc, uid, session, prompt)[0], edit=edit
+            prompt, at, uid, candidate=candidate, check=lambda doc: hook_decision(doc, uid, prompt)[0], edit=edit
         )
     except HookRefused as refused:
         store.append_hook_error(at, refused.code)

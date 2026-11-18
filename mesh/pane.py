@@ -86,6 +86,11 @@ def command_name(text: str) -> str:
     return text.split(None, 1)[0][1:]
 
 
+def privileged(command: str) -> bool:
+    """D113/D122: a privilege-changing slash command (its name case-folded: `/CONFIG` is `/config`)."""
+    return command_name(command).casefold() in layers.PRIVILEGED_COMMANDS
+
+
 # ---------------------------------------------------------------- the tool's outcomes
 PaneRefused = layers.RefusedError
 
@@ -105,10 +110,11 @@ class Target:
 class PaneCommand:
     def __init__(
         self, store: Store, pmx: Projmux, tmux: Tmux, root, own_pane: str | None, at: str,
-        confirm: Callable[[], None] | None = None,
+        confirm: Callable[[], None] | None = None, prove: layers.Prover | None = None,
     ):  # fmt: skip
         self.store, self.pmx, self.tmux, self.root, self.own_pane, self.at = store, pmx, tmux, root, own_pane, at
         self.confirm = confirm  # D113: raises the refusal unless the operator typed the popup code
+        self.prove = prove  # D123: the cite-time transcript proof of a candidate event
 
     # -- refusals
     def _refuse(self, caller: Caller, code: RefusalCode, detail: str, item_id: str | None = None):
@@ -141,7 +147,7 @@ class PaneCommand:
             self._refuse(caller, RefusalCode.TARGET_INVALID, f"no item {item_id}", item_id)
         if not event_id:
             self._refuse(caller, RefusalCode.EVENT_NOT_BOUND, "cite the operator event that names this command")
-        event = layers.resolve_event(self.store, event_id)
+        event = layers.resolve_event(self.store, event_id, self.prove)
         self._check_event(caller, self.store.read().doc, event, role, command, item_id)
         target = self._target(caller, role, item_id)
         kind = self._pane_kind(target)
@@ -152,7 +158,7 @@ class PaneCommand:
                 f"the lead's pane is not idle ({kind.value}); a trust or permission prompt is never answered",
                 item_id,
             )
-        if command_name(command) in layers.PRIVILEGED_COMMANDS:  # D113: a privilege-changing command
+        if privileged(command):  # D113/D122: a privilege-changing command
             if self.confirm is None:
                 self._refuse(caller, RefusalCode.CONFIRM_FAILED, "no confirmation channel (D113)", item_id)
             self.confirm()

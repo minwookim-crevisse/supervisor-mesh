@@ -18,8 +18,10 @@ A test (tests/test_mesh_review_w5.py) asserts that no other module re-implements
   JSON input          `parse_json`: THE parser of every JSON mesh reads (a tool call line, --json, a hook payload,
                       state.json, the logs, projmux output): one nesting-depth bound, never a RecursionError (F8)
   caller proof        `proven_caller` (D108 ancestry, D109 PM pin) for every non-read-only call; `pm_gate`
-  operator proof      `prompt_proof` (D110): the hook's prompt is the latest real user prompt of the PM transcript
-  confirmation        `confirm` (D113): a one-time code shown only in a tmux popup on the PM pane's client
+  operator proof      `transcript_prover` (D110 at cite time, D123): a candidate event is the latest real user
+                      prompt of the PM transcript
+  confirmation        `confirm` (D113, D121): a one-time code shown only in a tmux popup on the PM pane's client;
+                      the plaintext crosses only a one-shot FIFO, the typed text comes back raw through another
 """
 
 from __future__ import annotations
@@ -34,8 +36,10 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, NoReturn, Sequence, TextIO, TypeVar
 
@@ -43,6 +47,7 @@ from .model import (
     Caller,
     CallerKind,
     Doc,
+    EventProof,
     EventUse,
     MeshError,
     NotInitialized,
@@ -147,9 +152,51 @@ def names(event_text: str, name: str) -> bool:
     return re.search(rx, event_text) is not None
 
 
-def resolve_event(store: Store, event_id: str | None) -> OperatorEvent | None:
-    """THE lookup of a cited operator event: only hook-recorded, genuine events (`Store.get_event`)."""
-    return store.get_event(event_id) if event_id else None
+Prover = Callable[[OperatorEvent, EventProof], "tuple[str, str] | None"]
+
+
+def resolve_event(store: Store, event_id: str | None, prove: Prover | None = None) -> OperatorEvent | None:
+    """THE lookup of a cited operator event: only hook-recorded, genuine events (`Store.get_event`). D123: a CANDIDATE
+    is proven here, at its first citation: `prove` (`transcript_prover`) reads the transcript and answers
+    ("entry", entry hash) | ("failed", code) | None (could not run: projmux unavailable; nothing is marked). The
+    result is committed under the lock on the fresh document by `settle_candidate` (newest candidate, entry ledger);
+    `bind_event` then refuses an unproven event. Without `prove` a candidate stays unproven (fail closed)."""
+    event = store.get_event(event_id) if event_id else None
+    if event is None or prove is None:
+        return event
+    proof = store.read().doc.event_proofs.get(str(event.seq))
+    if proof is None or proof.status != "candidate":
+        return event
+    outcome = prove(event, proof)
+    if outcome is not None:
+        with store.locked() as txn:
+            doc = settle_candidate(txn.doc, event, outcome)
+            if doc is not txn.doc:
+                txn.commit(doc)
+    return event
+
+
+def settle_candidate(doc: Doc, event: OperatorEvent, outcome: tuple[str, str]) -> Doc:
+    """D123 on the fresh document: a candidate becomes proven only when it is still a candidate, it is the NEWEST
+    candidate of its session (rule 4) and its entry has backed no other event (rule 5: the entry ledger, one usable
+    event per real transcript entry); else it is failed for good."""
+    key = str(event.seq)
+    proof = doc.event_proofs.get(key)
+    if proof is None or proof.status != "candidate":
+        return doc
+    kind, value = outcome
+    if kind == "entry":
+        newer = any(
+            p.session_sha256 == proof.session_sha256 and int(k) > event.seq for k, p in doc.event_proofs.items()
+        )
+        if newer:
+            kind, value = "failed", "newer_candidate"
+        elif value in doc.transcript_entries:
+            kind, value = "failed", "transcript_entry_reused"
+    if kind == "entry":
+        proofs = {**doc.event_proofs, key: replace(proof, status="proven")}
+        return replace(doc, event_proofs=proofs, transcript_entries={**doc.transcript_entries, value: event.seq})
+    return replace(doc, event_proofs={**doc.event_proofs, key: replace(proof, status="failed", why=value)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,8 +222,9 @@ def bind_event(
     events: Iterable[OperatorEvent] = (),
     unbound: str = "the operator event does not name what it authorises",
 ) -> Bound | Unbound:
-    """THE operator-event binding. In order: the event exists (hook-recorded), is unused (single use, D63), is the
-    newest operator prompt when `fresh` (by mesh seq, D74), and, when `tokens` is given, is bound:
+    """THE operator-event binding. In order: the event exists (hook-recorded), is unused (single use, D63), is proven
+    when it is a candidate (D123: `resolve_event` ran the proof), is the newest operator prompt when `fresh` (by mesh
+    seq, D74), and, when `tokens` is given, is bound:
       name path      the event text names one of `tokens` as a whole token (`names`)
       proposal path  `proposal` = (role, exact text): the latest proposal before the event has exactly that text and
                      role, is unused, the event is the FIRST operator prompt after it, and the event text names the
@@ -186,6 +234,14 @@ def bind_event(
         return Unbound(RefusalCode.EVENT_UNKNOWN, "no operator event with that id was recorded by the PM-pane hook")
     if event.id in doc.event_uses:
         return Unbound(RefusalCode.EVENT_REUSED, f"operator event {event.id} was already used")
+    proof = doc.event_proofs.get(str(event.seq))
+    if proof is not None and proof.status != "proven":  # D123: a candidate needs its transcript proof
+        if proof.why == "transcript_entry_reused":
+            return Unbound(RefusalCode.EVENT_REUSED, "its transcript entry already backed another operator event")
+        return Unbound(
+            RefusalCode.EVENT_UNPROVEN,
+            "the operator event is not backed by the latest real user prompt of the PM transcript (D110, D123)",
+        )
     if fresh and event.seq != doc.last_operator_seq:
         return Unbound(RefusalCode.EVENT_STALE, "a newer operator prompt was recorded after it: cite the latest one")
     if tokens is None:
@@ -282,14 +338,6 @@ def output_failure(patterns: Sequence[str], out: str, err: str, worktree: str | 
             shown = _ABS_PATH.sub("<path>", shown).strip()
             return shown[:MAX_EVIDENCE]
     return None
-    compiled = [re.compile(p) for p in patterns]
-    wt = str(worktree).rstrip("/")
-    for line in f"{out}\n{err}".split("\n"):
-        if any(rx.search(line) for rx in compiled):
-            shown = line.replace(wt + "/", "").replace(wt, ".")
-            shown = _ABS_PATH.sub("<path>", shown).strip()
-            return shown[:MAX_EVIDENCE]
-    return None
 
 
 # ---------------------------------------------------------------- JSON input (F8)
@@ -343,6 +391,15 @@ def contained(root: str | os.PathLike, rel: str | os.PathLike) -> bool:
     base = os.path.realpath(root)
     real = os.path.realpath(os.path.join(base, rel))
     return real == base or real.startswith(base + os.sep)
+
+
+def contained_file(root: str | os.PathLike, rel: str | os.PathLike) -> RefusalCode | None:
+    """None when `rel` resolves (realpath) to a regular file inside `root` (D117 (4): the work order `work_dispatch`
+    points at); else OUTSIDE_ROOT (it resolves outside, a symlink included) or WORK_ORDER_MISSING (no such file)."""
+    if not contained(root, rel):
+        return RefusalCode.OUTSIDE_ROOT
+    real = os.path.realpath(os.path.join(os.path.realpath(root), rel))
+    return None if os.path.isfile(real) else RefusalCode.WORK_ORDER_MISSING
 
 
 # ---------------------------------------------------------------- caller proof (D108, D109)
@@ -420,8 +477,16 @@ def transcript_dirs(root: str | os.PathLike, env: Mapping[str, str]) -> set[str]
 
 
 def _prompt_text(entry: Any) -> str | None:
-    """The text of a real user prompt entry, else None (an assistant line, a tool result, a meta or sidechain line)."""
-    if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):
+    """The text of a REAL operator prompt entry, else None. Structural and positive (D123, the Claude Code 2.1.327
+    shapes): type user, isMeta not true, not a sidechain, origin.kind == "human" (required: no origin or no kind is not
+    a prompt; peer messages, task notifications, auto-continuations and any unknown kind are not), and the content a
+    string or text-only blocks (never a tool_result). Never decided by the text."""
+    if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isMeta") is True:
+        return None
+    if entry.get("isSidechain") is True:
+        return None
+    origin = entry.get("origin")
+    if not isinstance(origin, dict) or origin.get("kind") != "human":
         return None
     msg = entry.get("message")
     if not isinstance(msg, dict) or msg.get("role") != "user":
@@ -429,18 +494,16 @@ def _prompt_text(entry: Any) -> str | None:
     content = msg.get("content")
     if isinstance(content, str):
         return content
-    if isinstance(content, list) and content and all(isinstance(b, dict) for b in content):
-        if any(b.get("type") == "tool_result" for b in content):
-            return None
-        texts = [b.get("text") for b in content if b.get("type") == "text" and isinstance(b.get("text"), str)]
-        return "\n".join(texts) if texts else None
+    if isinstance(content, list) and content and all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        texts = [b.get("text") for b in content]
+        return "\n".join(texts) if all(isinstance(t, str) for t in texts) else None
     return None
 
 
-def _latest_prompt_entry(path: str, prompt: str) -> str | None:
-    """The uuid of the LATEST user prompt entry when its text equals `prompt`, else None. Streams the tail line by
-    line; keeps only (uuid, equal?) of the newest prompt seen, never a line's text."""
-    latest: tuple[str | None, bool] | None = None
+def _latest_prompt_entry(path: str, prompt: str) -> tuple[str, Any] | None:
+    """(uuid, timestamp) of the LATEST real prompt entry when its text equals `prompt`, else None. Streams the tail
+    line by line; keeps only (uuid, equal?, timestamp) of the newest prompt seen, never a line's text."""
+    latest: tuple[str | None, bool, Any] | None = None
     with open(path, "rb") as fh:
         size = os.fstat(fh.fileno()).st_size
         if size > TRANSCRIPT_TAIL:
@@ -461,92 +524,351 @@ def _latest_prompt_entry(path: str, prompt: str) -> str | None:
             text = _prompt_text(entry)
             if text is not None:
                 uuid = entry.get("uuid")
-                latest = (uuid if isinstance(uuid, str) and uuid else None, text == prompt)
+                latest = (uuid if isinstance(uuid, str) and uuid else None, text == prompt, entry.get("timestamp"))
     if latest is None or not latest[1] or latest[0] is None:
         return None
-    return latest[0]
+    return latest[0], latest[2]
 
 
-def prompt_proof(
-    payload: Mapping[str, Any],
-    prompt: str,
-    root: str | os.PathLike,
-    env: Mapping[str, str],
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str | None, str | None]:
-    """D110: (entry hash, None) when the hook's prompt equals the latest real user prompt in the session's transcript,
-    else (None, error code). The transcript path must resolve to a regular file `<session_id>.jsonl` directly under
-    this project's Claude projects directory. It is read only to find that one entry: nothing from it is kept,
-    logged or returned but sha256(session:uuid). The hook may run a moment before Claude writes the entry: a
-    mismatch is re-read a few times (bounded)."""
+def session_proof(
+    payload: Mapping[str, Any], live_session: Callable[[str], tuple[str | None, str | None]], agent_uid: str
+) -> str | None:
+    """D118: None when the hook's `session_id` equals the agent's live session id from projmux and its
+    `transcript_path` resolves (realpath) to projmux's transcript path; else a hook_error code. No session id or no
+    transcript path from projmux, or projmux unavailable, fails closed. Neither value is returned, logged or kept."""
+    try:
+        live_id, live_path = live_session(agent_uid)
+    except MeshError:
+        return "projmux_unavailable"
     session, path = payload.get("session_id"), payload.get("transcript_path")
-    if not isinstance(session, str) or not _SESSION.fullmatch(session) or not isinstance(path, str) or not path:
-        return None, "transcript_refused"
+    if not live_id or not live_path or not isinstance(session, str) or not isinstance(path, str) or not path:
+        return "session_not_pm"
+    if not hmac.compare_digest(session.encode("utf-8"), live_id.encode("utf-8")):
+        return "session_not_pm"
+    return None if os.path.realpath(path) == os.path.realpath(live_path) else "session_not_pm"
+
+
+CITE_SKEW_S = 5.0  # D123: the entry may be stamped this much before the candidate's record time (a binding rule)
+
+
+def _utc(text: Any) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else None
+
+
+def _transcript_file(session: str, path: str, root: str | os.PathLike, env: Mapping[str, str]) -> str | None:
+    """The transcript path (realpath) when it is a regular file `<session>.jsonl` directly under this project's
+    Claude projects directory, else None."""
+    if not _SESSION.fullmatch(session) or not path:
+        return None
     real = os.path.realpath(path)
     if os.path.dirname(real) not in transcript_dirs(root, env) or os.path.basename(real) != f"{session}.jsonl":
-        return None, "transcript_refused"
+        return None
     try:
-        if not stat.S_ISREG(os.stat(real).st_mode):
-            return None, "transcript_refused"
+        return real if stat.S_ISREG(os.stat(real).st_mode) else None
     except OSError:
-        return None, "transcript_refused"
+        return None
 
-    def attempt(n: int) -> str | None:
+
+def session_sha256(session: str) -> str:
+    return hashlib.sha256(session.encode("utf-8")).hexdigest()
+
+
+def transcript_prover(
+    root: str | os.PathLike, env: Mapping[str, str], live_session: Callable[[str], tuple[str | None, str | None]]
+) -> Prover:
+    """D110 at cite time (D123). For a candidate: projmux's live session of the recording PM agent must still be the
+    one the hook saw (by hash), its transcript a regular file in this project's Claude projects dir, and the LATEST
+    real operator prompt there (`_prompt_text`) must equal the event text and be stamped no earlier than the record
+    time minus CITE_SKEW_S. Answers ("entry", sha256(session:uuid)) | ("failed", code) | None (projmux unavailable or
+    the transcript unreadable: nothing is marked). Nothing from the transcript is kept, logged or returned but that
+    hash."""
+
+    def prove(event: OperatorEvent, proof: EventProof) -> tuple[str, str] | None:
+        if not event.agent_uid:
+            return "failed", "session_not_pm"
         try:
-            return _latest_prompt_entry(real, prompt)
+            session, path = live_session(event.agent_uid)
+        except MeshError:
+            return None
+        if not session or not path:
+            return None
+        if not hmac.compare_digest(session_sha256(session), proof.session_sha256):
+            return "failed", "session_not_pm"
+        real = _transcript_file(session, path, root, env)
+        if real is None:
+            return "failed", "transcript_refused"
+        try:
+            found = _latest_prompt_entry(real, event.text)
         except OSError:
             return None
+        if found is None:
+            return "failed", "prompt_not_in_transcript"
+        uuid, stamped = found
+        entry_at, recorded = _utc(stamped), _utc(event.at)
+        if entry_at is None or recorded is None or entry_at < recorded - timedelta(seconds=CITE_SKEW_S):
+            return "failed", "prompt_too_old"
+        return "entry", hashlib.sha256(f"{session}:{uuid}".encode("utf-8")).hexdigest()
 
-    uuid = retry(attempt, retries=3, transient=lambda u: u is None, backoff_s=0.1, sleep=sleep)[-1]
-    if uuid is None:
-        return None, "prompt_not_in_transcript"
-    return hashlib.sha256(f"{session}:{uuid}".encode("utf-8")).hexdigest(), None
+    return prove
 
 
 # ---------------------------------------------------------------- confirmation (D113)
-PRIVILEGED_COMMANDS = frozenset({"permissions", "config", "login", "logout", "mcp", "plugin", "hooks"})
+PRIVILEGED_COMMANDS = frozenset(  # D113 + D122: a fixed list, matched case-folded (no alias table)
+    {"permissions", "config", "login", "logout", "mcp", "plugin", "hooks", "allowed-tools", "settings", "plugins",
+     "permission"}
+)  # fmt: skip
 CONFIRM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 CONFIRM_LEN = 8
 CONFIRM_HELPER = Path(__file__).resolve().with_name("confirm.py")
+CONFIRM_JOIN_S = 15.0  # after the dir is gone: how long to wait for the popup to close
+
+
+CONFIRM_DIR_VAR = "MESH_CONFIRM_DIR"  # the popup's env: the work dir (a path, not a secret; never in the helper argv)
+CONFIRM_MAGIC = "mesh-confirm/1"
+CONFIRM_POLL_S = 0.05
+CONFIRM_MAX_ANSWER = 256  # bytes: a longer answer is malformed
+
+
+CONFIRM_PREFIX = "mesh-confirm-"  # <system temp>/mesh-confirm-*: one confirmation's work dir (D121)
+OWNER_FILE = "owner"  # beside a mesh temp dir's content: mesh's marker and the owner pid (D122)
+OWNER_TAG = "supervisor-mesh owner"
+
+
+def mark_owned(parent: str | os.PathLike, pid: int | None = None) -> None:
+    """Mark a fresh mesh temp dir as mesh's and name its owner process (the reaper leaves a live owner alone)."""
+    fd = os.open(os.path.join(parent, OWNER_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as fh:
+        fh.write(f"{OWNER_TAG} {os.getpid() if pid is None else pid}\n")
+
+
+def marked_owner(parent: str | os.PathLike) -> int | None:
+    """The owner pid of a dir carrying mesh's marker (a regular `owner` file of the right shape), else None."""
+    path = os.path.join(parent, OWNER_FILE)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        with open(path, encoding="ascii") as fh:
+            text = fh.read(128)
+    except (OSError, UnicodeDecodeError):
+        return None
+    tag, _, pid = text.strip().rpartition(" ")
+    return int(pid) if tag == OWNER_TAG and pid.isascii() and pid.isdigit() and len(pid) < 10 else None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def dead_mesh_dir(path: str | os.PathLike, prefix: str) -> bool:
+    """THE reaper rule (D122, both the verify worktrees and the confirm dirs): `path` is exactly
+    `<system temp>/<prefix>*`, a real dir (no symlink) owned by this uid with mode 0700, carries mesh's marker, and
+    its owner process is gone. Anything else, a live owner above all, is left alone."""
+    path = Path(path)
+    if not path.name.startswith(prefix):
+        return False
+    if os.path.realpath(path.parent) != os.path.realpath(tempfile.gettempdir()):
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+        return False
+    owner = marked_owner(path)
+    return owner is not None and not _pid_alive(owner)
+
+
+def reap_confirm_dirs() -> int:
+    """Recovery: remove the confirm work dirs a killed mesh left behind (`dead_mesh_dir`), each by its exact path."""
+    tmp = tempfile.gettempdir()
+    removed = 0
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return 0
+    for name in names:
+        path = os.path.join(tmp, name)
+        if name.startswith(CONFIRM_PREFIX) and dead_mesh_dir(path, CONFIRM_PREFIX):
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    return removed
+
+
+def _proc_holders(fifo: os.stat_result) -> set[int] | None:
+    """The pids (other than this process) holding `fifo` open, from /proc; None where there is no /proc."""
+    if not os.path.isdir("/proc/self/fd"):
+        return None
+    me, held = os.getpid(), set()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == me:
+            continue
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                st = os.stat(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == (fifo.st_dev, fifo.st_ino):
+                held.add(int(pid))
+                break
+    return held
+
+
+def _is_helper(pid: int) -> bool:
+    """The pid is alive and runs the confirm helper (its argv[1], from /proc where there is one)."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, OverflowError):
+        return False
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except FileNotFoundError:
+        return not os.path.isdir("/proc/self")
+    except OSError:
+        return False
+    return len(argv) > 1 and argv[1] == str(CONFIRM_HELPER).encode()
+
+
+def _confirm_work(work: str) -> tuple[str, str] | None:
+    """The fresh work dir: a 0700 dir of ours, empty; then mesh's marker (D122) and the two FIFOs made here (O_EXCL and
+    mkfifo refuse an existing name)."""
+    st = os.lstat(work)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+        return None
+    if os.listdir(work):
+        return None
+    mark_owned(work)
+    code_p, answer_p = os.path.join(work, "code"), os.path.join(work, "answer")
+    try:
+        os.mkfifo(code_p, 0o600)
+        os.mkfifo(answer_p, 0o600)
+    except FileExistsError:
+        return None
+    return code_p, answer_p
+
+
+def _same_fifo(path: str, want: os.stat_result) -> bool:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISFIFO(st.st_mode) and (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino)
+
+
+def _judge(buf: bytes, answer: os.stat_result, want: str) -> str | None:
+    """One answer line `<magic> <pid> <raw typed text>`, from the live helper pid that alone holds the FIFO."""
+    line, _, rest = buf.partition(b"\n")
+    if rest:
+        return "second_writer"
+    try:
+        magic, pid_s, typed = line.decode("utf-8").split(" ", 2)
+    except (UnicodeDecodeError, ValueError):
+        return "malformed"
+    if magic != CONFIRM_MAGIC or not (pid_s.isascii() and pid_s.isdigit()) or len(pid_s) > 9:
+        return "malformed"
+    pid, holders = int(pid_s), _proc_holders(answer)
+    if holders is not None and holders - {pid}:
+        return "second_writer"
+    if not _is_helper(pid) or (holders is not None and pid not in holders):
+        return "popup_gone"
+    typed = typed.strip().upper()
+    if not typed:
+        return "none"
+    return None if hmac.compare_digest(hashlib.sha256(typed.encode("utf-8")).hexdigest(), want) else "wrong"
 
 
 def confirm(
-    popup: Callable[[list[str], float], bool],
+    popup: Callable[[list[str], Mapping[str, str], float], bool],
     timeout_s: float,
     *,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> str | None:
-    """D113: None when the operator typed the one-time code into the popup, else why not (unavailable | none | wrong
-    | timeout). The code is made here (`secrets`), handed to the popup helper through a 0600 file in a fresh 0700
-    temp dir (the helper reads and removes it at once), and never appears in an argv, a log, stdout or .mesh/: mesh
-    keeps only its sha256, in memory, for this one call. The helper writes back the sha256 of what was typed."""
-    work = tempfile.mkdtemp(prefix="mesh-confirm-")
+    """D113/D121: None when the operator typed the one-time code into the popup, else why not (unavailable | none |
+    wrong | timeout | tampered | second_writer | popup_gone | malformed). The code is made here (`secrets`) and only
+    its sha256 is kept; the plaintext reaches the popup helper once through the FIFO `code` in a fresh 0700 dir (never
+    a regular file, never an argv: the helper gets the dir in its env); the operator's RAW typed text comes back
+    through the FIFO `answer`, which mesh holds open for reading, and mesh hashes and compares it. One answer, only
+    while the helper pid lives and alone holds `answer`; a pre-existing or planted entry, a second writer or a second
+    write is refused; the dir is removed at once. A same-user process can still race the FIFOs (D96)."""
+    work = tempfile.mkdtemp(prefix=CONFIRM_PREFIX)
+    afd, runner_thread = None, None
     try:
-        code = "".join(secrets.choice(CONFIRM_ALPHABET) for _ in range(CONFIRM_LEN))
-        want = hashlib.sha256(code.encode("ascii")).hexdigest()
-        fd = os.open(os.path.join(work, "code"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, code.encode("ascii"))
-        finally:
-            os.close(fd)
-        del code
+        made = _confirm_work(work)
+        if made is None:
+            return "tampered"
+        code_p, answer_p = made
+        code = "".join(secrets.choice(CONFIRM_ALPHABET) for _ in range(CONFIRM_LEN)).encode("ascii")
+        want = hashlib.sha256(code).hexdigest()
+        afd = os.open(answer_p, os.O_RDONLY | os.O_NONBLOCK)
+        answer, code_st = os.fstat(afd), os.lstat(code_p)
+        if not _same_fifo(answer_p, answer) or not stat.S_ISFIFO(code_st.st_mode):
+            return "tampered"
+        started: list[bool] = []
+        argv = [sys.executable, str(CONFIRM_HELPER), str(int(timeout_s))]
+        runner_thread = threading.Thread(
+            target=lambda: started.append(bool(popup(argv, {CONFIRM_DIR_VAR: work}, timeout_s))), daemon=True
+        )
         deadline = clock() + timeout_s
-        if not popup([sys.executable, str(CONFIRM_HELPER), work, str(int(timeout_s))], timeout_s):
-            return "unavailable"
-        answer = os.path.join(work, "answer")
-        while not os.path.exists(answer):
+        runner_thread.start()
+        buf = b""
+        while True:
+            sleep(CONFIRM_POLL_S)
+            if sorted(os.listdir(work)) != ["answer", "code", OWNER_FILE] or not (
+                _same_fifo(answer_p, answer) and _same_fifo(code_p, code_st)
+            ):
+                return "tampered"
+            if code:  # written once, as soon as a reader has the FIFO open
+                try:
+                    cfd = os.open(code_p, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError:  # ENXIO: nobody reads yet
+                    cfd = None
+                if cfd is not None:
+                    try:
+                        if _same_fifo(code_p, os.fstat(cfd)):
+                            os.write(cfd, code + b"\n")
+                    finally:
+                        os.close(cfd)
+                    code = b""
+            try:
+                buf += os.read(afd, CONFIRM_MAX_ANSWER + 1)
+            except BlockingIOError:
+                pass
+            if len(buf) > CONFIRM_MAX_ANSWER:
+                return "malformed"
+            if b"\n" in buf:
+                try:
+                    buf += os.read(afd, CONFIRM_MAX_ANSWER + 1)  # anything already behind the first line
+                except BlockingIOError:
+                    pass
+                return _judge(buf, answer, want)
+            if started and not started[0]:
+                return "unavailable"
             if clock() >= deadline:
                 return "timeout"
-            sleep(0.05)
-        with open(answer, encoding="ascii", errors="replace") as fh:
-            got = fh.read().strip()
-        if not got:
-            return "none"
-        return None if hmac.compare_digest(got, want) else "wrong"
     finally:
+        if afd is not None:
+            os.close(afd)
         shutil.rmtree(work, ignore_errors=True)
+        if runner_thread is not None:
+            runner_thread.join(CONFIRM_JOIN_S)
 
 
 # ---------------------------------------------------------------- the tool layer

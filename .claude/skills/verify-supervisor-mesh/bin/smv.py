@@ -1281,6 +1281,9 @@ def launch_steps(a) -> int:
     code, out, err, cap = step("git-init", ["git", "init", "-q", str(run.proj)], 30)
     if code != 0:
         return launch_failed(run, "git init", code, out, err, cap)
+    code = scratch_identity(run)
+    if code != 0:
+        return launch_failed(run, "git config (scratch identity)", code, "", "", budget(30))
     digest_key(run, create=True)
     try:
         write_snapshot(run, "baseline")
@@ -1321,6 +1324,20 @@ def launch_steps(a) -> int:
     elif rc not in (0, 10):
         print("launch: FAIL. Keep the output; run: smv cleanup")
     return rc
+
+
+SCRATCH_GIT_IDENTITY = {"user.name": "smv", "user.email": "smv-qa"}  # no '@': typed text never opens autocomplete
+
+
+def scratch_identity(run: Run) -> int:
+    """A repo-LOCAL git identity in the scratch repo only (never --global, never the lead tree), so a commit in the
+    scratch project works on a host without a global identity. Recorded in run.json; each config call is a step."""
+    for k, v in SCRATCH_GIT_IDENTITY.items():
+        code = run.cmd(f"git-config-{k}", ["git", "-C", str(run.proj), "config", "--local", k, v], timeout=30)[0]
+        if code != 0:
+            return code
+    run.update(lambda d: d.__setitem__("git_identity", {**SCRATCH_GIT_IDENTITY, "scope": "local", "repo": "proj"}))
+    return 0
 
 
 def pm_create_argv(project: str, proj: Path, run_id: str, pm_role: bool) -> list[str]:
@@ -1606,6 +1623,12 @@ def allow_key(spec: str) -> str:
 def cmd_hash_diff(a) -> int:
     """Compare two hash lists. Each --allow names one change that must happen; nothing else may change."""
     run = Run.load(a.run)
+    if a.allow_file:  # a named allowance list kept in the skill (features/*.allow): one 'KIND PATH' per line
+        src = Path(a.allow_file)
+        if not src.is_file() or not within(src, SKILL_DIR):
+            die(f"--allow-file must be a file inside the skill dir ({SKILL_DIR.name}/)", 2)
+        a.allow = [*a.allow, *(x.strip() for x in src.read_text().splitlines() if x.strip()
+                               and not x.lstrip().startswith("#"))]
     sid = run.next_id(f"hash-diff-{a.before}-{a.after}")
     step = run.ev / "steps" / f"{sid}.txt"
     head = f"$ smv hash-diff {a.before} {a.after}" + "".join(f" --allow '{x}'" for x in a.allow) + "\n"
@@ -2817,6 +2840,36 @@ def mcp_calls(path: Path, since: dt.datetime | None) -> list[dict]:
     return calls
 
 
+def field_ok(value: str | None, want: str) -> bool:
+    """`want` '' or '*': present and non-empty; otherwise equal (as the extract shows it)."""
+    if want in ("", "*"):
+        return value not in (None, "", "-", "None")
+    return value == want
+
+
+def mesh_init_checks(all_calls: list[dict], recent: list[dict], mode: str) -> list[tuple[str, bool, str]]:
+    """F9: a mesh_init call is proof only with the right fields. dry-run: applied=False, a non-empty plan_id,
+    exit_code 0. apply: applied=True, exit_code 0, and both the call's plan_id argument and the result's plan_id equal
+    the plan_id of the last good dry run before it (anywhere in the transcript)."""
+    def ok(c, applied):
+        f = (c["result"] or {}).get("fields", {})
+        return (c["result"] is not None and not c["result"]["is_error"] and f.get("applied") == applied
+                and f.get("exit_code") == "0" and field_ok(f.get("plan_id"), "*"))
+    mine = [c for c in recent if c["tool"] == "mesh_init"]
+    if mode == "dry-run":
+        good = [c for c in mine if ok(c, "False")]
+        return [("mesh_init dry run: applied=False, non-empty plan_id, exit_code 0", bool(good),
+                 str([(c["result"] or {}).get("fields") for c in mine]))]
+    out = []
+    for c in (x for x in mine if ok(x, "True")):
+        before = [d for d in all_calls if d["tool"] == "mesh_init" and d["ts"] <= c["ts"] and ok(d, "False")]
+        plan = before[-1]["result"]["fields"]["plan_id"] if before else None
+        if plan and c["input"].get("plan_id") == plan == c["result"]["fields"].get("plan_id"):
+            out.append(c)
+    return [("mesh_init apply: applied=True, exit_code 0, plan_id == the dry run's (argument and result)", bool(out),
+             str([((c["result"] or {}).get("fields"), c["input"].get("plan_id")) for c in mine]))]
+
+
 def call_line(c: dict) -> str:
     r = c["result"]
     outcome = "no result" if r is None else ("error" if r["is_error"] else "ok") + ("" if r["parsed"] else " (raw)")
@@ -2846,6 +2899,15 @@ def cmd_mcp_calls(a) -> int:
                and (want == "any" or c["result"]["is_error"] == (want == "error"))]
         checks.append((f"{tool}: at least one call with a {want} result (correlated by tool_use_id)", bool(got),
                        f"{len(got)} of {sum(c['tool'] == tool for c in calls)}"))
+    for spec in a.expect_field:
+        tool, _, kv = spec.partition(":")
+        key, _, want = kv.partition("=")
+        got = [c for c in calls if c["tool"] == tool and c["result"] is not None and field_ok(
+            c["result"]["fields"].get(key), want)]
+        checks.append((f"{tool}: a result with {key}={want or '*'}", bool(got),
+                       f"seen {[c['result']['fields'].get(key) for c in calls if c['tool'] == tool and c['result']]}"))
+    if a.mesh_init:
+        checks += mesh_init_checks(mcp_calls(path, None) if a.since_last_send else calls, calls, a.mesh_init)
     if a.all_tools:
         names = tool_names(run.mkt_src if run.mkt_src.is_dir() else run.repo)
         seen = {c["tool"] for c in calls if c["result"] is not None}
@@ -3056,7 +3118,8 @@ def cmd_msg_probe(a) -> int:
 
 # ---------------------------------------------------------------- offline self-tests (tests/, stubs only)
 
-TESTS_DIR = Path(__file__).resolve().parents[1] / "tests"
+SKILL_DIR = Path(__file__).resolve().parents[1]
+TESTS_DIR = SKILL_DIR / "tests"
 
 
 def cmd_selftest_redaction(a) -> int:
@@ -3131,6 +3194,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--allow", action="append", default=[], metavar="'KIND PATH'",
                    help="ADDED|MISSING|CHANGED and a relative scratch-project path (repeatable); anything else is "
                         "refused with exit 2")
+    p.add_argument("--allow-file", help="a 'KIND PATH' per line list inside the skill dir (features/*.allow)")
     p = add("tgrep", cmd_tgrep, "search an agent's Claude transcript in place (evidence: redacted extract)",
             agent=True)
     p.add_argument("--pattern", required=True)
@@ -3187,6 +3251,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--expect", action="append", default=[], metavar="TOOL[=ok|error|any]")
     p.add_argument("--all-tools", action="store_true", help="every tool the export registers answered once")
     p.add_argument("--prefix", help="the tool-name prefix every call must carry")
+    p.add_argument("--expect-field", action="append", default=[], metavar="TOOL:KEY=VALUE",
+                   help="a call of TOOL whose result field KEY equals VALUE ('*' or empty: non-empty)")
+    p.add_argument("--mesh-init", choices=["dry-run", "apply"], help="the mesh_init field checks (F9)")
     p = add("mcp-env", cmd_mcp_env, "the MCP server under the pane got the pane identity env (presence/equality)",
             agent=True)
     p.add_argument("--proc-root", default="/proc", help=argparse.SUPPRESS)

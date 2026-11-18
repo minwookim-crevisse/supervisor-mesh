@@ -127,15 +127,17 @@ class Tmux:
         """C-u: erase the input line (an aborted keypress leaves nothing behind in the box)."""
         self._run("send-keys", "-t", pane_id, "C-u")
 
-    def popup(self, pane_id: str, argv: list[str], timeout_s: float) -> bool:
-        """D113: run `argv` in a popup on the client showing `pane_id` (popup content is not pane content:
-        capture-pane cannot read it). The argv names a helper and its temp dir only, never a secret. True: started."""
+    def popup(self, pane_id: str, argv: list[str], env: Mapping[str, str], timeout_s: float) -> bool:
+        """D113/D121: run `argv` in a popup on the client showing `pane_id` (popup content is not pane content:
+        capture-pane cannot read it), with `env` set in the popup (`-e`: the work dir path, not a secret). Neither
+        carries a secret: the code travels only through the work dir's FIFO. True: started."""
         clients = self._run("list-clients", "-t", pane_id, "-F", "#{client_name}").split()
         if not clients:
             return False
+        sets = [a for k, v in sorted(env.items()) for a in ("-e", f"{k}={v}")]
         r = runner.run(
             [self.exe, *SOCKET, "display-popup", "-c", clients[0], "-t", pane_id, "-E", "-w", "72", "-h", "9",
-             shlex.join(argv)],
+             *sets, shlex.join(argv)],
             timeout=timeout_s + 5,
             env=self.env,
         )  # fmt: skip

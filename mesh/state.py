@@ -1129,10 +1129,10 @@ def unblock(c: Ctx) -> Doc:
 
 
 # ------------------------------------------------------- guards and effects: reply / ack / close / reject / revalidate
-@guard(RefusalCode.FACT_UNAVAILABLE, RefusalCode.EVENT_UNKNOWN, RefusalCode.EVENT_REUSED)
+@guard(RefusalCode.FACT_UNAVAILABLE, RefusalCode.EVENT_UNKNOWN, RefusalCode.EVENT_REUSED, RefusalCode.EVENT_UNPROVEN)
 def event_unconsumed(c: Ctx) -> Verdict | None:
-    """The cited operator event exists (recorded by the PM-pane hook, so the PM cannot fabricate one) and no earlier
-    reply or override used it (D63: single use)."""
+    """The cited operator event exists (recorded by the PM-pane hook, so the PM cannot fabricate one), no earlier
+    reply or override used it (D63: single use) and, when it is a candidate, its transcript proof passed (D123)."""
     fact = c.facts.operator_event
     if fact is None:
         return _verdict(RefusalCode.FACT_UNAVAILABLE, "the cited operator event was not looked up")

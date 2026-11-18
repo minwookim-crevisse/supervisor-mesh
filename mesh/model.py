@@ -24,7 +24,7 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from typing import Any, Literal, Mapping
 
-ITEM_ID_PATTERN = r"WO-\d{4,}"
+ITEM_ID_PATTERN = r"WO-[0-9]{4,}"  # ASCII digits only: `\d` also matches Arabic-Indic, fullwidth, ...
 ROLE_PATTERN = r"[a-z][a-z0-9-]*"
 SHA_PATTERN = r"[0-9a-f]{40}"
 
@@ -394,6 +394,7 @@ class RefusalCode(StrEnum):
     EVENT_UNKNOWN = "event_unknown"
     EVENT_REUSED = "event_reused"
     EVENT_STALE = "event_stale"
+    EVENT_UNPROVEN = "event_unproven"  # D123: a candidate event whose transcript proof failed (or could not run yet)
     UNACKED_REPLIES = "unacked_replies"
     NOTHING_TO_ACK = "nothing_to_ack"
     REVALIDATE_FLAG = "revalidate_flag"
@@ -408,7 +409,8 @@ class RefusalCode(StrEnum):
     PANE_NOT_IDLE = "pane_not_idle"
     CONFIRM_FAILED = "confirm_failed"  # D113: no, a wrong or a late out-of-band confirmation code
     RE_PIN_REFUSED = "re_pin_refused"  # D114: the pinned PM is still Running, or no re-pin event backs the call
-    OUTSIDE_ROOT = "outside_root"  # D111: a mesh_init / tracker write resolves outside the project root
+    OUTSIDE_ROOT = "outside_root"  # D111: a mesh_init / tracker write (D117: a work order) resolves outside the root
+    WORK_ORDER_MISSING = "work_order_missing"  # D117 (4): no regular work-order file under the project root
 
 
 # ---------------------------------------------------------------- records (section 3)
@@ -640,6 +642,17 @@ class EventUse:
 
 
 @dataclass(frozen=True, slots=True)
+class EventProof:
+    """D123: the hook records a CANDIDATE (the transcript entry is written only after the hook returns); the D110 proof
+    runs when a tool first cites it. `session_sha256`: sha256 of the hook's (D118-checked) session id, never the id.
+    A failed candidate stays failed; `why` is a fixed code."""
+
+    session_sha256: str
+    status: Literal["candidate", "proven", "failed"] = "candidate"
+    why: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Proposal:
     """D85 proposal path: the exact command the PM proposed, stored under the mesh seq BEFORE the operator's next
     prompt approves it. Single use."""
@@ -659,7 +672,7 @@ class RePin:
 
     event_id: str
     agent_uid: str
-    session: str
+    session: str | None = None  # legacy (pre-D118): never written or read; kept so an older state.json still loads
 
 
 SCHEMA_VERSION = 1
@@ -682,13 +695,18 @@ class Doc:
     # str(seq) -> sha256 of the operator event record, written under the lock in the SAME commit that takes the seq:
     # events.jsonl is append-only but not trusted on its own (a line appended or edited by anyone else matches no hash)
     operator_event_sha256: Mapping[str, str] = field(default_factory=dict)
-    # D109: the PM agent uid mesh_init apply pinned; only that uid acts as the PM. D110: the PM's Claude session (the
-    # first hook-proven prompt pins it; a re-pin moves both). `transcript_entries`: sha256(session:uuid) of every
-    # transcript entry that backed an event -> its seq (one event per entry; never the uuid, the text or the path)
+    # D109: the PM agent uid mesh_init apply pinned; only that uid acts as the PM. D118: the PM's Claude session is
+    # never pinned; every operator event is checked against projmux's live session of that agent. `pm_session` is
+    # legacy (never written or read), kept so an older state.json still loads. `transcript_entries`:
+    # sha256(session:uuid) of every transcript entry that backed an event -> its seq (one event per entry; never the
+    # uuid, the text or the path)
     pm_uid: str | None = None
     pm_session: str | None = None
     transcript_entries: Mapping[str, int] = field(default_factory=dict)
     pm_repin: RePin | None = None
+    # D123: str(seq) -> the proof record of a hook-recorded candidate event. An event without one (recorded through the
+    # store API in process, or before D123) is not a candidate
+    event_proofs: Mapping[str, EventProof] = field(default_factory=dict)
 
     def override_errors(self) -> list[str]:
         """D112 (F6): an item whose current evidence is an operator override needs the override use of an operator

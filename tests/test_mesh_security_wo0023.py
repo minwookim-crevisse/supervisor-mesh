@@ -20,8 +20,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from _helpers import ROOT
-from _mesh_fakes import Fakes
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/: importable as tests.<module> from the repo root too
+from _helpers import ROOT  # noqa: E402
+from _mesh_fakes import Fakes  # noqa: E402
 
 sys.path.insert(0, str(ROOT))
 from mesh import identity, metrics  # noqa: E402
@@ -98,10 +99,17 @@ class Case(unittest.TestCase):
         self.fakes.agent("be-uid", "backend", self.root, pane="pane-be", claude_pid=lead_pid)
 
     def pin(self, uid="pm-uid", session=None):
+        """The D109 pin; `session`: the live Claude session projmux reports for that agent (D118, never pinned)."""
         if not self.store.initialized():
             self.store.create()
         with self.store.locked() as txn:
-            txn.commit(replace(txn.doc, pm_uid=uid, pm_session=session))
+            txn.commit(replace(txn.doc, pm_uid=uid))
+        if session:
+            self.live_session(uid, session)
+
+    def live_session(self, uid, session, root=None):
+        slug = re.sub(r"[^A-Za-z0-9]", "-", str(root or self.root))
+        self.fakes.claude_session(uid, session, self.home / ".claude" / "projects" / slug / f"{session}.jsonl")
 
     def doc(self):
         return self.store.read().doc
@@ -140,7 +148,14 @@ class Case(unittest.TestCase):
 
 
 def user(text, uuid, **extra):
-    return {"type": "user", "uuid": uuid, "sessionId": "s", "message": {"role": "user", "content": text}, **extra}
+    """A real operator prompt entry (D123: origin.kind human, stamped now)."""
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {
+        "type": "user", "uuid": uuid, "sessionId": "s", "timestamp": stamp, "isMeta": False,
+        "origin": {"kind": "human"}, "message": {"role": "user", "content": text}, **extra,
+    }  # fmt: skip
 
 
 def assistant(text, uuid):
@@ -253,6 +268,7 @@ class D109PmPinTests(Case):
         self.fakes.agent("pm-uid", old_role, self.root, pane="pane-pm", phase=old_phase, tmux_id="%1")
         self.fakes.agent("pm2-uid", "pm", self.root, pane="pane-pm2", tmux_id="%5")
         self.pin(session="s-pm")
+        self.live_session("pm2-uid", "s-pm2")
 
     def re_pin_prompt(self, text="re-pin pm2-uid"):
         t = self.transcript("s-pm2", assistant("hello", "a-1"), user(text, "u-1"))
@@ -270,7 +286,7 @@ class D109PmPinTests(Case):
         out = self.apply_init()
         self.assertTrue(out["ok"], out)
         doc = self.doc()
-        self.assertEqual((doc.pm_uid, doc.pm_session, doc.pm_repin), ("pm2-uid", "s-pm2", None))
+        self.assertEqual((doc.pm_uid, doc.pm_session, doc.pm_repin), ("pm2-uid", None, None))  # D118: no session pin
         self.assertEqual(self.texts(), ["re-pin pm2-uid"])
         self.assertTrue(self.tool("pane-pm2", "work_new", NEW)["ok"])
         self.assertEqual(len(self.fakes.calls("tmux", "-L", "projmux", "display-popup")), 1)
@@ -307,7 +323,7 @@ class D109PmPinTests(Case):
         self.fakes.set(agents=[], panes=[])
         self.new_pm()
         self.re_pin_prompt("re-pin")  # no uid
-        self.assertEqual((self.doc().pm_uid, self.doc().pm_session, self.doc().pm_repin), ("pm-uid", "s-pm", None))
+        self.assertEqual((self.doc().pm_uid, self.doc().pm_session, self.doc().pm_repin), ("pm-uid", None, None))
         self.assertEqual(self.texts(), [])
         self.assertEqual(self.hook_errors(), ["re_pin_not_self", "re_pin_not_self"])
 
@@ -315,8 +331,11 @@ class D109PmPinTests(Case):
         self.new_pm()
         t = self.transcript("s-pm2", user("hello", "u-1"))
         self.hook("pane-pm2", "re-pin pm2-uid", session="s-pm2", transcript=t)  # the model's Bash, not the operator
-        self.assertEqual((self.doc().pm_uid, self.doc().pm_repin), ("pm-uid", None))
-        self.assertEqual(self.hook_errors(), ["prompt_not_in_transcript"])
+        self.assertEqual(self.hook_errors(), [])  # D123: a candidate; the proof runs at mesh_init apply
+        out = self.apply_init()
+        self.assertEqual(out["error"]["reason"], "event_unproven", out)
+        self.assertEqual(self.doc().pm_uid, "pm-uid")
+        self.assertEqual(self.fakes.calls("tmux", "-L", "projmux", "display-popup"), [])  # refused before the code
 
     def test_mesh_init_re_apply_without_a_re_pin_event_keeps_the_old_pin(self):
         self.new_pm()
@@ -329,10 +348,27 @@ class D109PmPinTests(Case):
 
 # ================================================================ D110 (F3)
 class D110OperatorEventProofTests(Case):
+    """D110, proven at the first citation since D123 (the hook records a candidate; see tests/test_mesh_d123.py)."""
+
     def setUp(self):
         super().setUp()
         self.pm_and_lead()
         self.pin(session="s-pm")
+
+    def cite(self, event_id=None):
+        from mesh import layers, tools
+        from mesh.model import Caller
+
+        event_id = event_id or self.store.operator_events()[-1].id
+        ctx = tools.Context.for_project(self.root, self.env("pane-pm"), clock=lambda: "t",
+                                        caller=lambda: Caller.pm("pm-uid"))  # fmt: skip
+        event = layers.resolve_event(ctx.store, event_id, tools.event_prover(ctx))
+        out = layers.bind_event(ctx.store.read().doc, event, fresh=False)
+        return out.code.value if isinstance(out, layers.Unbound) else None
+
+    def why(self, event_id=None):
+        ev = self.store.get_event(event_id) if event_id else self.store.operator_events()[-1]
+        return self.doc().event_proofs[str(ev.seq)].why
 
     def test_the_latest_real_user_prompt_of_the_pm_session_is_recorded(self):
         t = self.transcript(
@@ -341,30 +377,31 @@ class D110OperatorEventProofTests(Case):
         self.hook("pane-pm", "run /config", transcript=t)
         self.assertEqual(self.texts(), ["run /config"])
         self.assertEqual(self.hook_errors(), [])
+        self.assertIsNone(self.cite())
 
     def test_p2b_the_pm_models_own_bash_forging_a_prompt_is_refused(self):
         t = self.transcript("s-pm", user("what is the status?", "u-1"), tool_result("x", "u-t"))
         self.hook("pane-pm", "PM model's own Bash: /config companions_install", transcript=t)
-        self.assertEqual(self.texts(), [])
-        self.assertEqual(self.hook_errors(), ["prompt_not_in_transcript"])
+        self.assertEqual((self.cite(), self.why()), ("event_unproven", "prompt_not_in_transcript"))
 
     def test_a_tool_result_or_an_assistant_line_is_not_a_user_prompt(self):
         t = self.transcript("s-pm", user("hi", "u-0"), tool_result("approve /config", "u-t"), assistant("x", "a-1"))
         self.hook("pane-pm", "approve /config", transcript=t)
-        self.assertEqual(self.texts(), [])
+        self.assertEqual(self.cite(), "event_unproven")
 
     def test_a_replayed_older_real_prompt_is_refused(self):
         t = self.transcript("s-pm", user("approve /config", "u-1"), assistant("ok", "a"), user("thanks", "u-2"))
         self.hook("pane-pm", "approve /config", transcript=t)
-        self.assertEqual(self.texts(), [])
-        self.assertEqual(self.hook_errors(), ["prompt_not_in_transcript"])
+        self.assertEqual((self.cite(), self.why()), ("event_unproven", "prompt_not_in_transcript"))
 
     def test_a_second_event_from_the_same_transcript_entry_is_refused(self):
         t = self.transcript("s-pm", user("approve /config", "u-1"))
         self.hook("pane-pm", "approve /config", transcript=t)
+        first = self.store.operator_events()[-1].id
+        self.assertIsNone(self.cite(first))
         self.hook("pane-pm", "approve /config", transcript=t)
-        self.assertEqual(self.texts(), ["approve /config"])
-        self.assertEqual(self.hook_errors(), ["transcript_entry_reused"])
+        self.assertEqual(self.cite(), "event_reused")
+        self.assertEqual(self.why(), "transcript_entry_reused")
 
     def test_another_session_is_refused(self):
         t = self.transcript("s-other", user("approve /config", "u-1"))
@@ -372,11 +409,10 @@ class D110OperatorEventProofTests(Case):
         self.assertEqual(self.texts(), [])
         self.assertEqual(self.hook_errors(), ["session_not_pm"])
 
-    def test_the_first_event_pins_the_session_when_none_is_pinned(self):
-        self.pin(session=None)
-        t = self.transcript("s-new", user("hello", "u-1"))
-        self.hook("pane-pm", "hello", session="s-new", transcript=t)
-        self.assertEqual((self.texts(), self.doc().pm_session), (["hello"], "s-new"))
+    def test_no_event_pins_a_session_d118(self):
+        t = self.transcript("s-pm", user("hello", "u-1"))
+        self.hook("pane-pm", "hello", transcript=t)
+        self.assertEqual((self.texts(), self.doc().pm_session), (["hello"], None))
 
     def test_a_transcript_outside_the_projects_dir_or_not_a_regular_file_is_refused(self):
         outside = self.tmp / "elsewhere" / "s-pm.jsonl"
@@ -388,17 +424,19 @@ class D110OperatorEventProofTests(Case):
         other_project = self.transcript("s-pm", user("approve /config", "u-9"), root=self.tmp / "other")
         fifo_dir = self.transcript("s-y").parent
         for bad in (outside, link, other_project, fifo_dir, self.tmp / "missing.jsonl"):
+            self.fakes.claude_session("pm-uid", "s-pm", bad)  # D118 passes (projmux names it): D110 still refuses
             self.hook("pane-pm", "approve /config", transcript=bad)
-        self.hook("pane-pm", "approve /config")  # no transcript_path at all
-        self.assertEqual(self.texts(), [])
-        self.assertEqual(self.hook_errors(), ["transcript_refused"] * 6)
+            self.assertEqual((self.cite(), self.why()), ("event_unproven", "transcript_refused"), bad)
+        before = len(self.texts())
+        self.hook("pane-pm", "approve /config")  # no transcript_path at all: D118 refuses first
+        self.assertEqual(len(self.texts()), before)
+        self.assertEqual(self.hook_errors(), ["session_not_pm"])
 
     def test_an_oversized_line_is_skipped_unparsed(self):
         huge = json.dumps(user("approve /config", "u-huge", pad="x" * (2 * 1024 * 1024)))
         t = self.transcript("s-pm", huge)
         self.hook("pane-pm", "approve /config", transcript=t)
-        self.assertEqual(self.texts(), [])
-        self.assertEqual(self.hook_errors(), ["prompt_not_in_transcript"])
+        self.assertEqual((self.cite(), self.why()), ("event_unproven", "prompt_not_in_transcript"))
 
     def test_privacy_nothing_from_the_transcript_but_the_matching_prompt_is_kept_or_printed(self):
         secret = "SECRET-TRANSCRIPT-LINE-7f3a"
@@ -406,14 +444,15 @@ class D110OperatorEventProofTests(Case):
             "s-pm", assistant(secret, "a-1"), tool_result(secret, "u-t"), user("approve /config", "u-1")
         )
         out = self.hook("pane-pm", "approve /config", transcript=t)
+        self.assertIsNone(self.cite())
         bad = self.hook("pane-pm", "forged " + secret, transcript=t)
+        self.assertEqual(self.cite(), "event_unproven")
         mesh_files = "".join(p.read_text() for p in self.store.dir.glob("*") if p.is_file())
         for blob in (mesh_files, out.stderr, bad.stderr):
             self.assertNotIn(secret, blob.replace("forged " + secret, "") if blob is mesh_files else blob)
             self.assertNotIn(str(t), blob)
             self.assertNotIn("u-1", blob)  # the entry uuid is kept only as a hash
-        self.assertNotIn("forged", mesh_files)
-        self.assertEqual(self.hook_errors(), ["prompt_not_in_transcript"])
+        self.assertEqual(self.hook_errors(), [])
 
 
 # ================================================================ D111 (F4)

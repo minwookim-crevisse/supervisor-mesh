@@ -141,10 +141,17 @@ One declarative table in `mesh/state.py`; the CLI and the tests read the same ta
 ## 9a. Operator answers from the PM terminal (D64)
 
 - Operator answers arrive through one of two channels: the PM terminal (current default) or Slack. `.mesh/config.toml` `operator_channel = "terminal" | "slack" | "both"`; init writes `terminal`.
-- Trigger: a Claude Code `UserPromptSubmit` hook, installed by `mesh init` in the project's `.claude/settings.json`, runs `mesh event record --source terminal`. The command records the prompt (text, timestamp, event id) to `.mesh/events.jsonl` only when the caller pane is the PM (projmux role label `pm` + project cwd); in any other pane it exits 0 and records nothing. The hook never blocks the prompt (exit 0 on every error, error written to the event log).
+- Trigger: a Claude Code `UserPromptSubmit` hook, installed by `mesh init` in the project's `.claude/settings.json`, runs `mesh event record --source terminal`. It records the prompt (text, timestamp, event id) to `.mesh/events.jsonl` only when all of these hold:
+  - the caller pane is the pinned PM (projmux role label `pm`, project cwd, the agent uid `mesh_init` pinned, exactly one live `role=pm` agent; D109);
+  - the hook runs under that pane's claude process (D96);
+  - the hook's `session_id` and realpath(`transcript_path`) equal the live `SessionID` and `TranscriptPath` projmux reports for that agent (`describe agent`); during a D114 re-pin, the calling new PM agent's session. projmux is asked on EVERY event; the session is never pinned from a prompt (D118). No SessionID from projmux, or projmux unavailable, records nothing (fail closed, hook_error `session_not_pm` / `projmux_unavailable`); neither value is logged or stored;
+  - the prompt equals the latest real user prompt of that transcript, an entry not used before (D110); this proof runs when a tool first cites the event, not in the hook, because the user entry reaches the transcript after the hook returns (D123).
+
+  Otherwise it exits 0 and records only a hook_error code; the hook never blocks the prompt.
+- Residual (D96, D118, D119): a process of the same OS user can still forge an operator event. It can append a fake user line to the REAL transcript, or feed projmux's session record with a forged `projmux internal agent-hook ingest`. `mesh init` adds the advisory deny `Bash(*agent-hook*ingest*)` to PM and lead settings until projmux checks the provenance. Ordinary events stay exposed to this; high-impact events stay behind the D113 out-of-band code.
 - The PM agent links an answer with `mesh work reply <item> --event <id>`. Only hook-recorded events are accepted, so the PM cannot fabricate an operator answer; freshness and single use (D63) apply to the event's mesh `seq` exactly as to a Slack reply (D74).
 - Slack replies keep the `attach` path (section 9). Both channels feed the same `replies[]` record with `source`.
-- Tests: hook in a lead pane records nothing; PM pane records an event; `reply` with an unknown or reused event id is refused; a terminal reply unlocks blocked(limit) once.
+- Tests: hook in a lead pane records nothing; PM pane records an event; `reply` with an unknown or reused event id is refused; a terminal reply unlocks blocked(limit) once. A fabricated session id and transcript are refused (`session_not_pm`) and the projmux-reported session is accepted; no SessionID from projmux fails closed.
 
 ## 10. Invariants (each is a test)
 

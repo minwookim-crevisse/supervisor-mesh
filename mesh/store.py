@@ -45,6 +45,7 @@ from .model import (
     Command,
     Config,
     Doc,
+    EventProof,
     InvalidArgs,
     InvariantViolation,
     MeshError,
@@ -375,20 +376,19 @@ class Store:
         at: str,
         agent_uid: str | None = None,
         *,
-        entry: str | None = None,
+        candidate: str | None = None,
         check: Callable[[Doc], str | None] | None = None,
         edit: Callable[[Doc, OperatorEvent], Doc] | None = None,
     ) -> OperatorEvent:
         """Section 9a: the hook path. The seq and the record's hash are taken under the lock and committed BEFORE the
         line is appended, so a crash in between loses the event but never reuses a seq. D112 (F7): the seq is above
-        every seq already in events.jsonl, so a line planted ahead never shares a seq with a genuine event. D110:
-        `entry` (the transcript entry hash) backs one event only; `check` re-decides on the fresh document (an error
-        code raises HookRefused) and `edit` adds to the commit (a session pin, a pending re-pin)."""
+        every seq already in events.jsonl, so a line planted ahead never shares a seq with a genuine event. D123:
+        `candidate` (the sha256 of the hook's session id) makes it a CANDIDATE whose D110 proof runs at its first
+        citation; `check` re-decides on the fresh document (an error code raises HookRefused) and `edit` adds to the
+        commit (a pending re-pin)."""
         with self.locked() as txn:
             doc = txn.doc
             why = check(doc) if check is not None else None
-            if why is None and entry is not None and entry in doc.transcript_entries:
-                why = "transcript_entry_reused"
             if why is not None:
                 raise HookRefused(why)
             logged = [r.get("seq") for r in self._lines(self.events_path)]
@@ -396,8 +396,8 @@ class Store:
             event = OperatorEvent(f"ev-{seq:06d}", seq, at, text, agent_uid)
             hashes = {**doc.operator_event_sha256, str(seq): event_sha256(event)}
             doc = replace(doc, seq=seq, last_operator_seq=seq, operator_event_sha256=hashes)
-            if entry is not None:
-                doc = replace(doc, transcript_entries={**doc.transcript_entries, entry: seq})
+            if candidate is not None:
+                doc = replace(doc, event_proofs={**doc.event_proofs, str(seq): EventProof(candidate)})
             if edit is not None:
                 doc = edit(doc, event)
             txn.commit(doc)

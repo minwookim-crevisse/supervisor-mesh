@@ -85,7 +85,9 @@ export SMV_RUN="<the SMV_RUN= path launch printed>"
 
 1. A preflight: projmux, tmux, claude, git, python3 >= 3.10, and `claude plugin --help` lists `marketplace` and
    `install`.
-2. `git init -q <run>/proj`, then the baseline snapshot.
+2. `git init -q <run>/proj`, a repo-LOCAL identity in it (`git -C <run>/proj config --local user.name smv`,
+   `user.email smv-qa`; no `@`, never `--global`, never the lead tree; recorded as `git_identity` in `run.json`), so
+   a commit in the scratch project works on a host without a global identity. Then the baseline snapshot.
 3. `projmux create project --root <run>/proj --name <run-id> -o uid`.
 4. `projmux start project uid:<proj> -o receipt` (detached, the operator's client never moves).
 5. `projmux create claude --host tmux --project uid:<proj> --cwd <run>/proj --name pm --label smv-run=<run-id> -o uid`.
@@ -381,7 +383,9 @@ run recorded.
   uid, tmux id, `pane_dead`, exit status) and the screen state. Both capture by the recorded tmux pane id, so they
   also work on a dead pane or an Offline agent.
 - `"$SMV" hash --label L [--exclude DIR]`: hash the scratch project.
-- `"$SMV" hash-diff A B [--allow "KIND PATH" ...]`: compare two hash lists. Each `--allow` (`ADDED`, `MISSING` or
+- `"$SMV" hash-diff A B [--allow "KIND PATH" ...] [--allow-file F]`: compare two hash lists. `--allow-file` reads
+  one `KIND PATH` per line (`#` comments) from a file inside the skill dir (`features/*.allow`); every line goes
+  through the same `--allow` checks. Each `--allow` (`ADDED`, `MISSING` or
   `CHANGED` plus a relative scratch-project path) must happen and nothing else may; exit 0 on `IDENTICAL` or
   `ONLY ALLOWED CHANGES`, 1 on `DIFFERENT` (an unallowed change, or an `UNMET` allowance), 2 on a refused `--allow`.
 - `"$SMV" init-check fresh|rerun --before A --after B`: assert the init journey from the transcript and the hashes.
@@ -430,7 +434,10 @@ run recorded.
   - `"$SMV" mcp-calls [--since-last-send] [--expect TOOL[=ok|error|any]] [--all-tools] [--prefix P]`: every
     supervisor-mesh MCP tool call in the agent's transcript and its result, correlated by tool_use_id; whitelisted
     inputs and result fields only (ids, phases, codes, plan id, dispatch ref, attempt and evidence runs).
-    `--all-tools` needs a result for every tool the export's `mesh/tools.py` registers.
+    `--all-tools` needs a result for every tool the export's `mesh/tools.py` registers. `--expect-field
+    TOOL:KEY=VALUE` needs a result whose extracted field equals VALUE (`*` or empty: non-empty). `--mesh-init
+    dry-run` needs `applied=False`, a non-empty `plan_id` and `exit_code 0`; `--mesh-init apply` needs
+    `applied=True`, `exit_code 0` and the last good dry run's `plan_id` as both the argument and the result.
   - `"$SMV" mcp-env`: the `mesh/mcp_server.py` process under the agent's pane has `PMX_INTERNAL_ACTIVATION_PANE_UID`,
     equal to its claude process's and to the recorded pane uid (keyed digests in memory, no value written), its cwd
     the scratch project, and its script location (installed copy, export, checkout).
@@ -553,6 +560,9 @@ CLI surface used, each checked with `--help` on the versions above:
   project` also drops the registry entry once no scope declares it (cleanup FAILs with a `LEFT` line if it does not;
   then ask the operator, never remove without `--scope`); and that the MCP tool prefix stays
   `mcp__plugin_supervisor-mesh_supervisor-mesh__` under another marketplace name (`features/mcp.md` check (e)).
+- `wait --agent <role>` for a model turn needs a prior `send` to that agent; a lead's turn that starts from a projmux
+  message (dispatch) has none, so `wait` exits 2 (F13, run 1). `features/mcp.md` uses `wait --ready --settle 60` plus
+  `state-check` instead; a turn-wait keyed on an inbound message is not built.
 - The MCP helpers' inputs (`/mcp` screens, MCP tool_use / tool_result records, `/proc`) are synthetic in
   `tests/test_mcp.py`; replace them with redacted live captures after the first live run.
 - `scope-pick` matches the option text exactly. If Claude Code rewords the scope menu, it stops with 12 by design;

@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload
+from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload, work_order
 from test_mesh_pane import PaneCase
 from test_mesh_state import (
     BACKEND,
@@ -63,6 +63,7 @@ NARROWED_DENY = (
     "Bash(*mesh* event record*)",
     "Bash(*tmux*send-keys*)",  # D113: advisory, the models do not type into panes
     "Bash(*tmux*paste-buffer*)",
+    "Bash(*agent-hook*ingest*)",  # D119: advisory, the model's Bash does not feed projmux's session record
     "Write(.mesh/state.json)",
     "Edit(.mesh/state.json)",
     "Write(.mesh/events.jsonl)",
@@ -361,7 +362,9 @@ class D96HookParentCheckTests(unittest.TestCase):
         base.update(CLAUDE_PROJECT_DIR=str(self.root), PMX_INTERNAL_ACTIVATION_PANE_UID="pane-pm")
         pin_pm(self.store)  # D109
         base["HOME"] = str(self.tmp)
-        payload = json.dumps(prompt_payload(self.tmp, self.root, "run /config"))  # D110
+        payload = prompt_payload(self.tmp, self.root, "run /config")  # D110
+        self.fakes.claude_session("pm-uid", payload["session_id"], payload["transcript_path"])  # D118
+        payload = json.dumps(payload)
         out = subprocess.run(
             [sys.executable, str(CLI), "event", "record", "--source", "terminal"],
             input=payload,
@@ -600,6 +603,7 @@ class D93DispatchRetryTests(WireCase):
         self.pm_agent()
         self.fakes.agent("be-uid", "backend", self.root)
         self.store.config_path.write_text("[dispatch]\nretry = 3\nbackoff_s = 0\n")
+        work_order(self.root)  # D117 (4)
 
     def dispatch(self):
         return tools.call(self.ctx(), "work_dispatch", {"item_id": "WO-0001"})
@@ -665,6 +669,7 @@ class D94OverlapWarningTests(WireCase):
         super().setUp()
         self.pm_agent()
         self.fakes.agent("be-uid", "backend", self.root)
+        work_order(self.root)  # D117 (4)
 
     def item(self, item_id, phase, write=(), resources=()):
         return item_in(

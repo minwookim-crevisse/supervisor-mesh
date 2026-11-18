@@ -52,6 +52,14 @@ if tool == "projmux":
         out(st.get("agents_raw") if "agents_raw" in st else {"items": st.get("agents", [])})
     if args[:2] == ["get", "panes"]:
         out({"items": st.get("panes", [])})
+    if args[:2] == ["describe", "agent"]:  # D118: the agent record, with status.sessionRef when a test set one
+        uid = args[2].removeprefix("uid:")
+        found = next((a for a in st.get("agents", []) if a["metadata"]["uid"] == uid), None)
+        if found is None:
+            out(None, 1, "fake projmux: no such agent")
+        ref = st.get("sessions", {}).get(uid)
+        status = {**found["status"], **({"sessionRef": {"claude": ref}} if ref else {})}
+        out({**found, "status": status})
     if args[:3] == ["agent", "status", "get"]:
         kind = st.get("interaction", {}).get(args[3].removeprefix("uid:"))
         out(f"{kind} observedAt=2026-11-18T00:00:00Z lifecycle=Running source=hook" if kind else "", 0 if kind else 1)
@@ -75,7 +83,14 @@ if tool == "tmux":
         mode = st.get("popup", "none")  # a test that never set it fails fast (refused), never waits
         if mode != "never":
             import re, shlex, subprocess
-            helper = subprocess.Popen(shlex.split(args[-1]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            popup_env = dict(os.environ)  # D121: `-e K=V` sets the popup's env (the work dir), never the argv
+            for i, a in enumerate(args[:-1]):
+                if a == "-e":
+                    k, _, v = args[i + 1].partition("=")
+                    popup_env[k] = v
+            helper = subprocess.Popen(
+                shlex.split(args[-1]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=popup_env
+            )
             code = None
             while code is None:
                 line = helper.stdout.readline()
@@ -257,6 +272,12 @@ class Fakes:
         self.save()
         return item
 
+    def claude_session(self, uid: str, session_id: str | None, transcript_path: str | os.PathLike | None) -> None:
+        """D118: what `projmux describe agent uid:<uid>` reports as the agent's live Claude session (None leaves a
+        field out). Kept apart from the agent record so re-registering an agent does not drop it."""
+        ref = {k: str(v) for k, v in (("sessionId", session_id), ("transcriptPath", transcript_path)) if v is not None}
+        self.set(sessions={**self.load().get("sessions", {}), uid: ref})
+
     def caller_env(self, spec: str | None, root: Path) -> dict:
         """The environment that makes a CHILD process resolve as `spec` (see `parse_caller`) the production way: a
         live, labelled agent of `root` in the fake projmux and its pane uid in PMX_INTERNAL_ACTIVATION_PANE_UID. An
@@ -282,14 +303,22 @@ class Fakes:
         return [r["args"] for r in rows if r["tool"] == tool and r["args"][: len(prefix)] == list(prefix)]
 
 
-def pin_pm(store, uid: str = "pm-uid", session: str | None = None) -> None:
-    """D109/D110 fixture: the PM pin mesh_init apply (and the first proven prompt) would leave in state.json."""
+def work_order(root, item_id: str = "WO-0001", rel: str | None = None) -> Path:
+    """D117 (4) fixture: the work-order file `work_dispatch` needs under the project root (default path)."""
+    path = Path(root) / (rel or f"docs/work-orders/{item_id}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# {item_id}\n", encoding="utf-8")
+    return path
+
+
+def pin_pm(store, uid: str = "pm-uid") -> None:
+    """D109 fixture: the PM pin mesh_init apply would leave in state.json (D118: no session is pinned)."""
     from dataclasses import replace
 
     if not store.initialized():
         store.create()
     with store.locked() as txn:
-        txn.commit(replace(txn.doc, pm_uid=uid, pm_session=session))
+        txn.commit(replace(txn.doc, pm_uid=uid))
 
 
 def prompt_payload(home: Path, root: Path, prompt: str, session: str = "s") -> dict:

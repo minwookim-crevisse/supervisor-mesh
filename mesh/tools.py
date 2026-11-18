@@ -74,7 +74,9 @@ class UnknownTool(KeyError):  # noqa: N818
 
 
 # tool-level refusal codes outside the transition table (pane_command's are `pane.CODES`)
-TOOL_CODES = frozenset({RefusalCode.CONFIRM_FAILED, RefusalCode.RE_PIN_REFUSED, RefusalCode.OUTSIDE_ROOT})
+TOOL_CODES = frozenset(
+    {RefusalCode.CONFIRM_FAILED, RefusalCode.RE_PIN_REFUSED, RefusalCode.OUTSIDE_ROOT, RefusalCode.WORK_ORDER_MISSING}
+)
 
 
 def utc_now() -> str:
@@ -122,7 +124,7 @@ class Context:
         store = Store(root / ".mesh")
         pmx = Projmux(env)
         provider = facts.chain(facts.projmux_facts(pmx, root), facts.git_facts(root, env, store.read_config))
-        engine = Engine(store, facts=provider)
+        engine = Engine(store, facts=provider, prover=layers.transcript_prover(root, env, pmx.claude_session))
         who = caller or caller_from_env(env, root, pmx)
         return cls(store, engine, who, clock, root, dict(env), pmx, Tmux(env))
 
@@ -382,8 +384,9 @@ def _pin_check(ctx: Context, caller: Caller):
         return None
     if rp is None:
         _refuse(ctx, "mesh_init", RefusalCode.CALLER_NOT_PM, f"mesh_init apply: {layers.OTHER_PM_WHY}", caller)
+    event = layers.resolve_event(ctx.store, rp.event_id, event_prover(ctx))  # D123: may prove the candidate
     bound = layers.bind_event(
-        doc, layers.resolve_event(ctx.store, rp.event_id), fresh=False, tokens=("re-pin",),
+        ctx.store.read().doc, event, fresh=False, tokens=("re-pin",),
         unbound="the re-pin event must name `re-pin` (D109)",
     )  # fmt: skip
     if isinstance(bound, layers.Unbound):
@@ -412,7 +415,7 @@ def _pin(ctx: Context, caller: Caller, repin) -> None:
         if repin is not None:
             event = layers.resolve_event(ctx.store, repin.event_id)
             doc = layers.consume(doc, event, "re_pin", repin.agent_uid, "done")
-            doc = replace(doc, pm_uid=repin.agent_uid, pm_session=repin.session, pm_repin=None)
+            doc = replace(doc, pm_uid=repin.agent_uid, pm_repin=None)
         elif doc.pm_uid is None:
             doc = replace(doc, pm_uid=caller.agent_uid)
         else:
@@ -420,10 +423,17 @@ def _pin(ctx: Context, caller: Caller, repin) -> None:
         txn.commit(doc)
 
 
-def _pm_popup(ctx: Context) -> Callable[[list[str], float], bool]:
+def event_prover(ctx: Context) -> layers.Prover | None:
+    """D123: the cite-time transcript proof for this project (None without a root: a candidate stays unproven)."""
+    if ctx.root is None:
+        return None
+    return layers.transcript_prover(ctx.root, ctx.env, (ctx.pmx or Projmux(ctx.env)).claude_session)
+
+
+def _pm_popup(ctx: Context) -> Callable[[list[str], Mapping[str, str], float], bool]:
     """The D113 popup on the PM pane's tmux client (the caller's own pane, as projmux reports it)."""
 
-    def popup(argv: list[str], timeout_s: float) -> bool:
+    def popup(argv: list[str], env: Mapping[str, str], timeout_s: float) -> bool:
         pane_uid = ctx.env.get(identity.PANE_VAR)
         if not pane_uid or ctx.pmx is None:
             return False
@@ -431,7 +441,7 @@ def _pm_popup(ctx: Context) -> Callable[[list[str], float], bool]:
             tmux_id = next((p.tmux_id for p in ctx.pmx.panes() if p.uid == pane_uid), None)
             if not valid_pane_id(tmux_id):  # D116
                 return False
-            return (ctx.tmux or Tmux(ctx.env)).popup(tmux_id, argv, timeout_s)
+            return (ctx.tmux or Tmux(ctx.env)).popup(tmux_id, argv, env, timeout_s)
         except (ProjmuxUnavailable, TmuxFailed):
             return False
 
@@ -584,6 +594,11 @@ def work_dispatch(ctx: Context, args: DispatchArgs) -> dict:
     root, pmx = _adapters(ctx)
     item = ctx.store.read().doc.items.get(args.item_id)
     if item is not None and ctx.caller().kind is CallerKind.PM:
+        order = dispatch.work_order_path(item)
+        if code := layers.contained_file(root, order):  # D117 (4): before anything is recorded or sent
+            detail = f"the work order {order} of {item.id} is not a regular file under the project root"
+            refusal = layers.tool_refusal("work_dispatch", code, detail, ctx.clock(), ctx.caller(), item.id)
+            layers.refuse(ctx.store, refusal)
         for action in actions.open_sends(item):
             replayed = _send_order(ctx, item, action)
             if not replayed.get("superseded"):
@@ -620,15 +635,16 @@ def replay_dispatches(ctx: Context) -> list[dict]:
 
 
 def recover(ctx: Context) -> None:
-    """Run once per server, after the MCP handshake (section 8). Any server removes the verify worktrees a killed run
-    left behind (their owner process is gone). Only the PM's server acts on the PM's actions: a
-    keypress or install caught mid-way becomes UNKNOWN (never replayed), every recorded, unsent dispatch is replayed,
-    and the due (mesh) rows are drained (a crash between a write and its follow-up left them due). A lead's or an
-    unknown caller's server takes none of these actions. A project without .mesh/ has nothing to recover."""
+    """Run once per server, after the MCP handshake (section 8). Any server removes the verify worktrees and the
+    confirm dirs a killed run left behind (their owner process is gone, D122). Only the PM's server acts on the PM's
+    actions: a keypress or install caught mid-way becomes UNKNOWN (never replayed), every recorded, unsent dispatch is
+    replayed, and the due (mesh) rows are drained (a crash between a write and its follow-up left them due). A lead's or
+    an unknown caller's server takes none of these actions. A project without .mesh/ has nothing to recover."""
     if not ctx.store.initialized():
         return
     if ctx.root is not None:  # any caller's server: only worktrees whose owner process is gone (F8)
         git.reap_worktrees(ctx.root, verify.child_env(ctx.env))
+    layers.reap_confirm_dirs()  # D122: any server; only confirm dirs whose owner process is gone
     if ctx.caller().kind is not CallerKind.PM:
         return
     layers.recover_attempting(ctx.store)
@@ -749,6 +765,7 @@ def pane_command(ctx: Context, args: PaneCommandArgs) -> dict:
         ctx.env.get(identity.PANE_VAR) or None,
         ctx.clock(),
         confirm=lambda: _confirm(ctx, caller, "pane_command"),
+        prove=layers.transcript_prover(root, ctx.env, pmx.claude_session),
     )
     if args.propose:
         return pc.propose(caller, args.role, args.command)
@@ -771,7 +788,7 @@ def companions_install(ctx: Context, args: InstallArgs) -> dict:
     home = _home(ctx.env)
     have = companions.present(home, root)
     manual = companions.plan_for(have)["manual"]
-    event = layers.resolve_event(ctx.store, args.event_id)
+    event = layers.resolve_event(ctx.store, args.event_id, event_prover(ctx))
     tokens = ("companions_install",) if args.only is None else ("companions_install", args.only)
     _check_install_event(ctx, caller, ctx.store.read().doc, event, tokens)
     plugins = companions.wanted(have, args.only)

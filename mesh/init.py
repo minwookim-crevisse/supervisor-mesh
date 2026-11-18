@@ -366,6 +366,7 @@ DENY_RULES = (
     "Bash(*mesh* event record*)",
     "Bash(*tmux*send-keys*)",  # D113, advisory: the models do not type into panes; mesh's server process does
     "Bash(*tmux*paste-buffer*)",
+    "Bash(*agent-hook*ingest*)",  # D119, advisory: a forged `projmux internal agent-hook ingest` moves the D118 anchor
     "Write(.mesh/state.json)",
     "Edit(.mesh/state.json)",
     "Write(.mesh/events.jsonl)",

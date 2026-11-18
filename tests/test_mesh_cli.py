@@ -95,7 +95,9 @@ class EventRecordTests(CliCase):
     def hook(self, prompt="please run /config", caller="pm:pm-uid", program=None, **extra):
         if self.store.initialized() and self.store.read().doc.pm_uid is None:
             pin_pm(self.store)  # D109: mesh_init apply pins the PM
-        payload = json.dumps(prompt_payload(self.tmp / "home", self.root, prompt))  # D110: a real user prompt
+        payload = prompt_payload(self.tmp / "home", self.root, prompt)  # D110: a real user prompt
+        self.fakes.claude_session("pm-uid", payload["session_id"], payload["transcript_path"])  # D118: projmux's record
+        payload = json.dumps(payload)
         return self.run_cli(
             "event", "record", "--source", "terminal", stdin=payload, caller=caller, program=program, **extra
         )
@@ -145,7 +147,9 @@ class EventRecordTests(CliCase):
         self.assertTrue(tools.call(ctx, "mesh_init", {"stack": "none", "apply": True, "plan_id": plan}).ok)
         settings = json.loads((self.root / ".claude" / "settings.json").read_text())
         command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-        payload = json.dumps(prompt_payload(self.tmp / "home", self.root, "install companions_install please"))
+        payload = prompt_payload(self.tmp / "home", self.root, "install companions_install please")
+        self.fakes.claude_session("pm-uid", payload["session_id"], payload["transcript_path"])  # D118
+        payload = json.dumps(payload)
         out = subprocess.run(
             ["sh", "-c", command], input=payload, capture_output=True, text=True, timeout=30, cwd=self.root, env=env
         )

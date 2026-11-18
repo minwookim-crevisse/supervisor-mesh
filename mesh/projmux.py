@@ -198,6 +198,23 @@ class Projmux:
             raise ProjmuxUnavailable(f"projmux agent status get failed (exit {r.code})")
         return words[0]
 
+    def claude_session(self, agent_uid: str) -> tuple[str | None, str | None]:
+        """D118: the agent's live Claude (session id, transcript path) as projmux records them
+        (`describe agent uid:<uid> -o json`: .status.sessionRef.claude.sessionId / .transcriptPath); None for a field
+        it does not report. A failure or a non-object answer is ProjmuxUnavailable (fail closed). Neither value is put
+        in an error message."""
+        r = self._run("describe", "agent", f"uid:{agent_uid}", "-o", "json")
+        if not r.ok:
+            raise ProjmuxUnavailable(f"projmux describe agent failed (exit {r.code})", hint="is projmux running?")
+        try:
+            data = layers.parse_json(r.out)
+        except ValueError:
+            raise ProjmuxUnavailable("projmux describe agent: output is not JSON") from None
+        if not isinstance(data, dict):
+            raise ProjmuxUnavailable("projmux describe agent: not an object")
+        claude = _obj(_obj(_obj(data, "status"), "sessionRef"), "claude")
+        return _str(claude.get("sessionId")) or None, _str(claude.get("transcriptPath")) or None
+
     def send(self, target_uid: str, source_uid: str | None, text: str, message_ref: str) -> Sent:
         """argv only (no shell, so backticks and `$` in the text are inert). A non-zero exit is a non-delivered
         receipt (failed, refused, expired or stale)."""

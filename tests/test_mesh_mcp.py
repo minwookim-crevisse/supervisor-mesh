@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, pin_pm
+from _mesh_fakes import Fakes, pin_pm, work_order
 from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
@@ -425,6 +425,7 @@ class WiredToolsOverStdioTests(McpCase):
 
     def test_status_dispatch_and_pane_command_answer_over_stdio(self):
         self.seed(doc_of(item_in(Phase.READY, contract=contract(version=1))))
+        work_order(self.project)  # D117 (4)
         self.fakes.agent("pm-uid", "pm", self.project, pane="pane-pm")
         self.fakes.agent("be-uid", "backend", self.project, pane="pane-be", tmux_id="%1")
         s = self.start(caller="pm:pm-uid", extra_env={"PMX_INTERNAL_ACTIVATION_PANE_UID": "pane-pm"})

@@ -111,24 +111,29 @@ Preconditions:
   "$SMV" json-shape --preset panes
   "$SMV" json-shape --preset marketplaces
   ```
-- **`mesh_init` dry run.** The first call of each MCP tool may raise a permission prompt (stop `11`, the operator
-  answers; resume). `mcp-calls` ends `PASS` with one `mesh_init` call whose result has `applied=False` and a
-  `plan_id`; its prefix check is (e). `hash-diff` prints `IDENTICAL`: a dry run writes nothing.
+- **`mesh_init` dry run.** The empty scratch project has no `package.json` or `pyproject.toml`, so the line names
+  `stack none` (without it `mesh_init` answers `exit_code 3`, stack ambiguous, and no `plan_id`: F8). The first call
+  of each MCP tool may raise a permission prompt (stop `11`, the operator answers; resume). `mcp-calls --mesh-init
+  dry-run` ends `PASS` only on a call with `applied=False`, a non-empty `plan_id` and `exit_code 0` (F9); its prefix
+  check is (e). `hash-diff` prints `IDENTICAL`: a dry run writes nothing.
   ```
-  "$SMV" send --text "Call the mesh_init tool once without apply, then show me its plan_id and summary."
+  "$SMV" send --text "Call mesh_init once without apply and with stack none; show me its plan_id and summary."
   "$SMV" wait --timeout 600
-  "$SMV" mcp-calls --since-last-send --expect mesh_init --prefix mcp__plugin_supervisor-mesh_supervisor-mesh__
+  "$SMV" mcp-calls --since-last-send --mesh-init dry-run --prefix mcp__plugin_supervisor-mesh_supervisor-mesh__
   "$SMV" hash --label post-dryrun
   "$SMV" hash-diff pre-mcp post-dryrun
   ```
-- **`mesh_init` apply.** `mcp-calls` shows `applied=True`, the same `plan_id` in the call's args and
-  `summary.create=N`; the hash list grows by N files (count both in the report). `state-check` ends `PASS` and
-  writes `evidence/state/init.json`.
+- **`mesh_init` apply.** `mcp-calls --mesh-init apply` ends `PASS` only on a call with `applied=True`,
+  `exit_code 0` and the dry run's `plan_id` both as its argument and in its result. `hash-diff` ends `ONLY ALLOWED
+  CHANGES` against `mcp-init.allow`: 16 files, the state lock `.mesh/state.lock` (F11) and the CHANGED
+  `.claude/settings.json` (at a1bb251; after a template change, re-derive the list from the diff and report it).
+  `state-check` ends `PASS` and writes `evidence/state/init.json`.
   ```
-  "$SMV" send --text "Call mesh_init again with apply true and the plan_id from the dry run. Change nothing else."
+  "$SMV" send --text "Call mesh_init with apply true, stack none and the dry run plan_id. Change nothing else."
   "$SMV" wait --timeout 600
-  "$SMV" mcp-calls --since-last-send --expect mesh_init
+  "$SMV" mcp-calls --since-last-send --mesh-init apply --expect-field mesh_init:summary.create=16
   "$SMV" hash --label post-init
+  "$SMV" hash-diff pre-mcp post-init --allow-file .claude/skills/verify-supervisor-mesh/features/mcp-init.allow
   "$SMV" state-check --label init
   "$SMV" cmd --label git-status-post-init -- git status --porcelain=v1 -uall
   ```
@@ -142,7 +147,8 @@ Preconditions:
   ```
 - **Verify config and baseline commit.** `mesh-config` is the operator's hand edit (the D96 deny rules keep the PM's
   file tools off `.mesh/`): one verify command `test -f docs/smv-probe.md`. The PM commits the scaffold; the item's
-  `start` needs a known HEAD. A `git` permission prompt is stop `11`.
+  `start` needs a known HEAD. The commit uses the repo-local identity `launch` set (`smv` / `smv-qa`, F12; never a
+  global one). A `git` permission prompt is stop `11`.
   ```
   "$SMV" mesh-config --verify-file docs/smv-probe.md
   "$SMV" send --text "Commit every file in this project with git, message smv baseline. Change no file."
@@ -177,8 +183,11 @@ Preconditions:
   worker (recorded by the creator rule) and raise permission prompts there (stop `11`, the operator answers). Then
   the lead's `mcp-calls` shows `work_transition` calls, and `state-check` ends `PASS` with the item `verified`, the
   history in order and every evidence run passed at the submitted commit.
+  `wait --agent role:qa` without `--ready` exits `2` here, because smv never sent into the lead's pane (F13); wait for
+  a ready pane that stays idle for 60 s, then check the state, and repeat both until the item is `verified` or the
+  lead asks something (a stop).
   ```
-  "$SMV" wait --agent role:qa --timeout 2400
+  "$SMV" wait --agent role:qa --ready --settle 60 --timeout 2400
   "$SMV" agents --label post-lead
   "$SMV" mcp-calls --agent role:qa --expect work_transition
   "$SMV" state-check --label verified --item "$ITEM" --expect-phase verified --expect-evidence-pass

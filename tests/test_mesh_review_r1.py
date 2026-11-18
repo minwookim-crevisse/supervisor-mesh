@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload
+from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload, work_order
 from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
@@ -110,6 +110,7 @@ class InProcess(Case):
         self.store.create()
         with self.store.locked() as txn:
             txn.commit(doc_of(*items, **kw))
+        work_order(self.root)  # D117 (4): the work order of WO-0001 exists, as a PM writes it before dispatch
 
 
 class F20CallerOncePerRequestTests(InProcess):
@@ -260,6 +261,7 @@ class F2dHookPayloadTests(Case):
         if payload.get("hook_event_name") == "UserPromptSubmit" and isinstance(payload.get("prompt"), str):
             if isinstance(payload.get("session_id"), str) and payload["session_id"]:  # D110: a real user prompt
                 payload = {**payload, **prompt_payload(self.home, self.root, payload["prompt"], payload["session_id"])}
+                self.fakes.claude_session("pm-uid", payload["session_id"], payload["transcript_path"])  # D118
         out = self.cli(
             "event",
             "record",
@@ -509,8 +511,10 @@ class F8WorktreeReapTests(Case):
     def leaked(self, owner: str | None, prefix="mesh-wt-"):
         parent = Path(tempfile.mkdtemp(prefix=prefix))
         self.made.append(parent)
-        if owner is not None:
-            (parent / "owner").write_text(owner)
+        if owner is not None:  # D122: mesh's marker with the owner pid
+            from mesh import layers
+
+            layers.mark_owned(parent, int(owner))
         _git(self.root, "worktree", "add", "--detach", "--quiet", str(parent / "wt"), self.sha)
         return parent / "wt"
 
@@ -550,10 +554,10 @@ class F8WorktreeReapTests(Case):
         self.assertNotIn(stale.resolve(), self.listed())
 
     def test_a_worktree_the_runner_makes_names_its_owner(self):
-        from mesh import git
+        from mesh import git, layers
 
         with git.worktree(self.root, self.sha, self.genv) as wt:
-            self.assertEqual((wt.parent / "owner").read_text(), str(os.getpid()))
+            self.assertEqual(layers.marked_owner(wt.parent), os.getpid())
             self.assertTrue(wt.parent.name.startswith("mesh-wt-"))
             self.assertEqual(git.reap_worktrees(self.root, self.genv), 0)  # our own, live run is left alone
 
@@ -863,7 +867,9 @@ class F19SizeBoundTests(InProcess):
         from mesh import dispatch
         from mesh.model import Scope
 
-        big = Scope(work_order="docs/" + "w" * 2000 + ".md", report="docs/" + "r" * 2000 + ".md")
+        long_order = "docs/" + ("w" * 200 + "/") * 10 + "o.md"  # a real file (D117 (4)): every name under 255 bytes
+        work_order(self.root, rel=long_order)
+        big = Scope(work_order=long_order, report="docs/" + "r" * 2000 + ".md")
         self.seed(item_in(Phase.READY, contract=contract(version=1, scope=big)))
         self.fakes.agent("be-uid", "backend", self.root)
         text = dispatch.compose(self.store.read().doc.items["WO-0001"], self.root, "mesh-WO-0001-d1")

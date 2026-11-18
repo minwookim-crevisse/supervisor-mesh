@@ -70,6 +70,31 @@ Lead re-run totals:
 - P10: event binding (whole token), the proposal path (`P-<n>`), the target project, cwd and own-pane checks, control and bidi characters, idle-state checks and receipt type separation all hold. Accepted text is typed with `send-keys -l --`, then a separate Enter.
 - P11: no install without a fresh naming PM event. A single-plugin event installs only that plugin. Extra args are `invalid_args`. Every argv carries `--scope project`. Config skills never reach argv. The receipt records versions.
 
+## Delta 1 — a1bb251 (WO-0028 + WO-0030 + D117)
+- Frozen copies `src-a1bb251/` and `plug-a1bb251/` (git archive; `sha256sum -c harness/src-a1bb251.sha` OK). Tests are in `deltatests/` (brief 3).
+- Lead re-run:
+  - `test_delta_*.py`: `Ran 48 tests`, `FAILED (failures=3)`, exit 1 (`lead-rerun/D-run-2.txt`).
+  - `test_g_*.py` (the brief-2 guards on the new code): `Ran 48 tests`, `OK`, exit 0 (`lead-rerun/D-run-2-g.txt`).
+  - Total 96 tests, 3 failures: F11 and F12 (×2). `ls /tmp | grep -c mesh-wt-` gave 0.
+
+| check | result |
+|---|---|
+| R1-R10 (F1-F10 regressions) | PASS: F1-F10 fixed. R3 same-user append to the real transcript = ACCEPTED-RISK (D96/D110) |
+| brief-2 guards V/C/I on a1bb251 | PASS, including the old F9 (literal match, 0.002 s) and F10. No C-u into a dialog |
+| N1a-d D113 code (argv/env/files/logs/result, popup on the PM client only, no client refused, wrong/none/timeout, single use) | PASS. FACT: 8 characters from a 32-letter alphabet (~40 bits), one attempt per popup |
+| N1e code file readable, answer forgeable | FINDING F12 |
+| N2 privileged scope | PASS for the 7 names. FACT: an exact, case-sensitive match, so `/CONFIG`, `/Config`, `/plugins`, `/settings`, `/allowed-tools` and others are typed without a code (Claude Code's own alias handling not asserted) |
+| N3 re-pin preconditions (D114) | PASS |
+| N4 fabricated session pin (D117-2) | FINDING F11 |
+| N5 deny rules | PASS: 9 rules (event record, tmux send-keys, tmux paste-buffer, Write/Edit on state.json, events.jsonl, refusals.jsonl); config.toml stays editable (D107). FACT: D119 `Bash(*agent-hook*ingest*)` absent (the tail commit adds it) |
+| N6 work-order path (D117-4) | FACT: missing, absolute-outside, `../` and symlinked work orders are all sent (the tail commit adds the check) |
+| stale `/tmp/mesh-confirm-879i9j51` (19:20, plaintext `code` 0600, not from these runs) | FACT: a killed confirm leaves the plaintext code in tmp and nothing reaps it |
+
+| # | sev | where (a1bb251) | defect | repro (output) | decision |
+|---|---|---|---|---|---|
+| F11 | 🔴 | `mesh/cli.py:168-169`, `:203-204`; `layers.py:476-510` | before the PM session is pinned, a fabricated `<session>.jsonl` under `~/.claude/projects/<slug>/` plus a matching hook stdin is recorded, pins the fake session and locks out the real one (`session_not_pm`); further fabricated prompts are accepted | `D-N4.txt`: `fabricated_accepted: true`, `final_pm_session: fab-0001`, `errors_after_real: [session_not_pm]` | D118: every event must match the pinned PM agent's live projmux SessionID + TranscriptPath, fail closed. D119: forged `agent-hook ingest` = D96 residual + advisory deny |
+| F12 | 🟠 | `mesh/layers.py:525-549`, `confirm.py:48-52` | the plaintext code sits in `<tmp>/mesh-confirm-*/code`, and the work dir is in the popup argv; a same-user reader forges `answer`; a pre-created `answer.tmp` makes the helper fail (`FileExistsError`), and the forged answer then approves even when the operator refuses | `D-run-2.txt` N1e: `unexpectedly None: the operator refused, yet the forged answer approved` | D121 (revised): mesh keeps the hash; the code reaches the popup over a one-shot FIFO; RAW typed text comes back over a second FIFO; mesh compares; threat model stated (stops a model acting through mesh tools and the advisory denies, not arbitrary same-user code). Steal-and-relay is a named ACCEPTED-RISK |
+
 ## Delta run (PASS gate) — planned against the WO-0028/WO-0030 commit
 1. Re-run the harness and guard suite. The F1-F10 tests must flip to refusals.
 2. D108: fail closed without a claude pid.

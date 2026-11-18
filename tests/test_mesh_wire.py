@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, parse_caller
+from _mesh_fakes import Fakes, parse_caller, work_order
 from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
@@ -211,6 +211,7 @@ class WorkDispatchTests(WireCase):
             )
         )
         self.pm_agent()
+        work_order(self.root)  # D117 (4)
 
     def dispatch(self, **env):
         return tools.call(self.ctx(**env), "work_dispatch", {"item_id": "WO-0001"})

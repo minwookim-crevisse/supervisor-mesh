@@ -45,3 +45,78 @@ Security guard tests: 4 of the 48 adopted (the F9/F10 reds plus C5), with source
 - **For the PM:** `work_dispatch` does not check that the work-order file exists before sending its path. Should a guard be added?
 - **Noted:** `ITEM_ID_PATTERN` accepts Unicode digits; not covered by D112.
 - **Accepted residual (D96):** a same-user process editing both `state.json` and `events.jsonl` can still forge an event (probe P2a-residual); documented in the README.
+
+## Tail (after WO-0031 a1bb251) — D117 item 4, ASCII ids, dead code, import, D118 (F11), D119
+Verdict: **PASS** (lead re-run). Tests: `tests/test_mesh_tail_wo0030.py` (15 tests). Worker log: `~/.local/state/supervisor-mesh-qa/WO-0030/tail-tdd-log.md`.
+1. **`work_dispatch` refuses a missing work-order file** (`work_order_missing`) or one symlinked outside the root (`outside_root`), before recording or sending anything. RED: both were sent. GREEN: OK.
+2. **`ITEM_ID_PATTERN = WO-[0-9]{4,}`**, and `tracker.py` now uses it. Arabic-Indic, fullwidth and mixed digits are refused at every id input. Lead check: `grep 'WO-\d' mesh/` gives 0 hits.
+3. **The dead `re.compile` loop after `return None`** in `layers.output_failure` is removed (AST test).
+4. **`tests/test_mesh_security_wo0023.py` imports** from the root and under discovery. Lead check: `python3 -m unittest tests.test_mesh_security_wo0023` → `OK`.
+5. **D118 / F11 (security N4 port):**
+   - The session is never pinned from a prompt.
+   - Every operator event checks the hook's `session_id` and realpath(`transcript_path`) against projmux `describe agent` `.status.sessionRef.claude.{sessionId,transcriptPath}`; a mismatch is refused with `session_not_pm`.
+   - No sessionId → `session_not_pm`; projmux down → `projmux_unavailable`. Both fail closed, and neither value is logged or stored.
+   - RED was captured against an `a1bb251` copy (5 FAIL).
+6. **D119:** the `Bash(*agent-hook*ingest*)` deny rule is present exactly once after init and after a re-run (`mesh/init.py:369`).
+
+Lead re-run:
+- `make check` exit 0 (`Ran 606 tests`, `OK`, `scrub: 0 hits`, `audit: PASS`);
+- validate passed;
+- `ruff check mesh tests` → `All checks passed!`;
+- tail tests 15 `ok`.
+
+### Decisions for the PM
+- **Re-pin session check:** a re-pin prompt is checked against the CALLING (new PM) agent's projmux session. D118's wording names only the pinned agent, but the pinned PM is not Running during a D114 re-pin. Please confirm.
+- **Two error codes:** `projmux_unavailable` is kept as a separate hook_error code from `session_not_pm`; both fail closed. Say if D118 wants a single code.
+- **Legacy fields:** `Doc.pm_session` and `RePin.session` remain as legacy schema fields (never written or read) so older state files still load.
+
+### Proposed section-9a text (state model; PM applies)
+- "Trigger: a Claude Code `UserPromptSubmit` hook, installed by `mesh init` in the project's `.claude/settings.json`, runs `mesh event record --source terminal`. It records the prompt (text, timestamp, event id) to `.mesh/events.jsonl` only when all of these hold:
+  - the caller pane is the pinned PM (projmux role label `pm`, project cwd, the agent uid `mesh_init` pinned, exactly one live `role=pm` agent; D109);
+  - the hook runs under that pane's claude process (D96);
+  - the hook's `session_id` and realpath(`transcript_path`) equal the live `SessionID` and `TranscriptPath` projmux reports for that agent (`describe agent`). projmux is asked on EVERY event; the session is never pinned from a prompt (D118). No SessionID from projmux, or projmux unavailable, records nothing (fail closed, hook_error `session_not_pm` / `projmux_unavailable`); neither value is logged or stored;
+  - the prompt equals the latest real user prompt of that transcript, an entry not used before (D110).
+
+  Otherwise it exits 0 and records only a hook_error code; the hook never blocks the prompt."
+- "Residual (D96, D118, D119): a process of the same OS user can still forge an operator event. It can append a fake user line to the REAL transcript, or feed projmux's session record with a forged `projmux internal agent-hook ingest`. `mesh init` adds the advisory deny `Bash(*agent-hook*ingest*)` to PM and lead settings until projmux checks the provenance. Ordinary events stay exposed to this; high-impact events stay behind the D113 out-of-band code."
+- Tests line, add: "a fabricated session id and transcript are refused (`session_not_pm`) and the projmux-reported session is accepted; no SessionID from projmux fails closed."
+
+## Tail 2 — D121 (revised), D122, D123 — commit-ready
+Verdict: **PASS** (lead re-run 2026-11-18). Worker log: `~/.local/state/supervisor-mesh-qa/WO-0030/tail2-tdd-log.md`. RED exit 1 for each of the three new modules, then GREEN.
+- **D121:**
+  - mesh generates the code and holds only its sha256.
+  - The plaintext goes once through FIFO `code`, in a fresh 0700 `mesh-confirm-*` dir with an `owner` marker.
+  - The RAW typed text comes back through FIFO `answer` as `mesh-confirm/1 <pid> <typed>`, and mesh hashes and compares it itself (hmac).
+  - Refused: exactly-one-line violations, other pids holding the FIFO, a dead or non-helper claimed pid, a changed dir set or changed inodes (`tampered`). The dir is removed in `finally`.
+  - The dir path reaches the helper via `display-popup -e` env; the code is in no argv. The earlier hash-pair design was never built.
+- **D122:**
+  - Any helper failure, crash, kill, timeout, missing answer, planted entry (the `answer.tmp` file or FIFO) or forged line is refused.
+  - Command names are case-folded; `/allowed-tools`, `/settings`, `/plugins` and `/permission` are added.
+  - There is one reaper rule, `layers.dead_mesh_dir`: tmp prefix, a real dir, this uid, 0700, the mesh `owner` marker, a dead owner pid. It is used for both confirm dirs and verify worktrees.
+- **D123:**
+  - The hook records a CANDIDATE after the D96, D109 and D118 checks, with no transcript read.
+  - The proof runs at the first citation (`layers.resolve_event`):
+    - live session hash equal to the one at record time;
+    - the latest REAL prompt, by the positive rule (type=user, not isMeta, not a sidechain, `origin.kind == "human"`, text only), equals the event text;
+    - the entry's ts is at least record time minus 5 s;
+    - rule 4: only the newest candidate binds;
+    - rule 5: one event per entry uuid.
+  - A failed candidate is marked for good; projmux being unavailable is not marked.
+  - New refusal code `event_unproven`. The retry loop in the hook is removed.
+
+Lead re-run:
+- `test_mesh_d121`, `test_mesh_d122` and `test_mesh_d123` → `OK` each;
+- `make check` exit 0 (`Ran 656 tests`, `OK`, `scrub: 0 hits`, `audit: PASS`);
+- validate passed;
+- ruff `All checks passed!`;
+- no `mesh-wt-*` left.
+
+Cleanup: a stale `/tmp/mesh-confirm-879i9j51` (19:20, old pre-D121 format: a 0600 plaintext `code` file, no marker) was held by no process. The new reaper keeps marker-less dirs, so the lead removed that exact path without reading the file; 0 `mesh-confirm-*` dirs remain.
+
+### For the PM
+- **Decision:** old-format verify worktrees without the marker are now kept by the reaper, not reaped (they fail closed on the stricter rule).
+- **Formal model:** not re-run. D123 adds a lookup refusal (`event_unproven`) but no transition.
+- **Live checks for WO-0024 re-run:**
+  - `tmux display-popup -e` passes the env to the helper;
+  - the helper is woken (POLLERR) when mesh closes its reader;
+  - the D123 candidate is proven at cite time on Claude Code 2.1.327.

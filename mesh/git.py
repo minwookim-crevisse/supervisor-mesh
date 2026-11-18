@@ -57,8 +57,7 @@ def descends(root: str | os.PathLike, commit: str, base: str, env: Mapping[str, 
     return {0: True, 1: False}.get(res.code) if not (res.spawn_error or res.timed_out) else None
 
 
-WT_PREFIX = "mesh-wt-"  # a mesh-owned worktree is <system temp>/mesh-wt-*/wt with an `owner` pid file beside it
-OWNER = "owner"
+WT_PREFIX = "mesh-wt-"  # a mesh-owned worktree is <system temp>/mesh-wt-*/wt with mesh's `owner` marker beside it
 
 
 class WorktreeUnavailable(Exception):  # noqa: N818  (the spec-style name, like model.Busy)
@@ -76,7 +75,7 @@ def worktree(root: str | os.PathLike, sha: str, env: Mapping[str, str]) -> Itera
     path = parent / "wt"
     added = False
     try:
-        (parent / OWNER).write_text(str(os.getpid()), encoding="ascii")  # `reap_worktrees` leaves a live run alone
+        layers.mark_owned(parent)  # `reap_worktrees` leaves a live run alone
         res = _git(root, env, "worktree", "add", "--detach", "--quiet", str(path), sha)
         if not res.ok:
             raise WorktreeUnavailable("git worktree add failed")
@@ -91,38 +90,22 @@ def worktree(root: str | os.PathLike, sha: str, env: Mapping[str, str]) -> Itera
         shutil.rmtree(parent, ignore_errors=True)
 
 
-def _owner_alive(parent: Path) -> bool:
-    try:
-        pid = int((parent / OWNER).read_text(encoding="ascii").strip())
-    except (OSError, ValueError):
-        return False  # no readable owner: the run died before (or while) it wrote one
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def reap_worktrees(root: str | os.PathLike, env: Mapping[str, str]) -> int:
     """Recovery (section 8): remove the worktrees a killed verify run left behind. Only a worktree that (1) THIS repo
-    lists (`git worktree list --porcelain`), (2) sits at `<system temp>/mesh-wt-*/wt` and (3) whose owner process is
-    gone, each by its exact path (`git worktree remove --force <path>`). Never `worktree prune`: it would drop the
-    metadata of another session's worktree whose directory is only temporarily missing. Returns how many it removed."""
+    lists (`git worktree list --porcelain`), (2) sits at `<system temp>/mesh-wt-*/wt` and (3) whose parent passes the
+    one reaper rule (`layers.dead_mesh_dir`, D122: 0700, this uid, mesh's marker, owner process gone), each by its
+    exact path (`git worktree remove --force <path>`). Never `worktree prune`: it would drop the metadata of another
+    session's worktree whose directory is only temporarily missing. Returns how many it removed."""
     res = _git(root, env, "worktree", "list", "--porcelain")
     if not res.ok:
         return 0
-    tmp = Path(tempfile.gettempdir()).resolve()
     removed = 0
     for line in res.out.split("\n"):
         if not line.startswith("worktree "):
             continue
         path = Path(line[len("worktree ") :])
         parent = path.parent
-        if path.name != "wt" or not parent.name.startswith(WT_PREFIX) or parent.parent.resolve() != tmp:
-            continue
-        if not parent.is_dir() or _owner_alive(parent):
+        if path.name != "wt" or not layers.dead_mesh_dir(parent, WT_PREFIX):  # D122: the one reaper rule
             continue
         if _git(root, env, "worktree", "remove", "--force", str(path)).ok:
             shutil.rmtree(parent, ignore_errors=True)
