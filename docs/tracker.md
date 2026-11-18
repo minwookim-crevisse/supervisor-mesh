@@ -28,14 +28,15 @@
 | WO-0021 | init step 6 privacy fix + preview/apply rule, same work order | backend | — (∥ WO-0020) | pass (PM-checked 2026-10-29: 7 companion tests OK; helper prints presence only; ruff not installed, lint unproven) | `docs/reports/WO-0021-backend.md` |
 | WO-0022 | mesh package + stdio MCP server (MVP 0.2.0), `docs/work-orders/2026-11-18-mcp-mvp.md` | backend | — (∥ WO-0020) | pass (PM gate 2026-11-18: make check 0, 531 tests; validate 0; stdio probe 11 tools; G-4 -> WO-0028) | `docs/reports/WO-0022-backend.md` |
 | WO-0023 | Security review of the MCP tool surface, same work order | security | WO-0022 | dispatched | `docs/reports/WO-0023-security.md` |
-| WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | dispatched | `docs/reports/WO-0024-qa.md` |
+| WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | pass (runs 1+2 live on a1bb251 / 382cf02; pane_command operator-typed step (f) before push; 9a formal re-pin: 68 runs 0 FINDING) | `docs/reports/WO-0024-qa.md` |
 | WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | waiting | — |
 | WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | pass (65af1b8 pushed by ship; origin/main = 65af1b8, PM-verified) | — |
 | WO-0027 | Re-sync TLA+ model to D100 (config hash at ready) + D101 (PM self-review reject), `docs/work-orders/2026-10-29-state-model-resync.md` method | qa | — (∥ WO-0022) | pass (PM gate 2026-11-18: make formal 68 runs 0 FINDING 0 UNEXPECTED; variants 49/49; D100-D106; unit gate excludes 3 W5-touched modules, full make check re-run after W5) | `docs/reports/WO-0027-qa.md` |
 | WO-0028 | D107: narrow the D96 deny rule to .mesh/state.json, events.jsonl, refusals.jsonl (config.toml stays editable; D100 pins it) | backend | WO-0029 | pass (PM-checked DENY_RULES 2026-11-18; 533 tests) | `docs/reports/WO-0022-backend.md` (addendum) |
 | WO-0030 | Security fixes D108-D112 (WO-0023 F1-F7), `docs/designs/mcp-server-spec.md` | backend | WO-0028 | pass (PM gate 2026-11-18: make check 0, 591 tests; deviations accepted as D117) | `docs/reports/WO-0030-backend.md` | Tail (6 items) pass at PM gate (606 tests); D120 recorded; D121 (code never on disk) in progress.
 | WO-0031 | Local checkpoint commit: WO-0028 + WO-0030 + QA WO-0024 skill build + specs/reports, NO push | ship | WO-0030 | pass (a1bb251 local, not pushed; PM-verified) | — |
-| WO-0032 | Local checkpoint commit: WO-0030 tail 1+2 (D118-D123), QA skill run-1 fixes, specs, reports, NO push | ship | WO-0030 tail 2 | dispatched | — |
+| WO-0032 | Local checkpoint commit: WO-0030 tail 1+2 (D118-D123), QA skill run-1 fixes, specs, reports, NO push | ship | WO-0030 tail 2 | pass (382cf02 local, not pushed; PM-verified) | — |
+| WO-0033 | Local checkpoint commit: WO-0030 tail 3 (D124), QA formal 9a re-pin, WO-0024 report, specs, NO push | ship | WO-0030 tail 3 | dispatched | — |
 | WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | pass (0501f50 local, not pushed; PM-verified) | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).

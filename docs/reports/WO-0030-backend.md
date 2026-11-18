@@ -120,3 +120,27 @@ Cleanup: a stale `/tmp/mesh-confirm-879i9j51` (19:20, old pre-D121 format: a 060
   - `tmux display-popup -e` passes the env to the helper;
   - the helper is woken (POLLERR) when mesh closes its reader;
   - the D123 candidate is proven at cite time on Claude Code 2.1.327.
+
+## Tail 3 — D124 (security F13) — commit-ready
+Verdict: **PASS** (lead re-run 2026-11-18, base 382cf02). Written only under `mesh/` and `tests/` while QA run 2 was live. Worker log: `~/.local/state/supervisor-mesh-qa/WO-0030/tail3-tdd-log.md`.
+- **F13 reproduced (RED):** security's `test_n1_a_thief_running_its_own_helper_instance`, ported to `tests/test_mesh_d124.py`, returned "approved while the operator's popup said 'no code received; refused'". `test_mesh_d124` failed: Ran 11, failures=8, errors=1, exit 1.
+- **Fix:**
+  - (a) Approval is judged only after mesh's own `display-popup -E` returns. Answers are buffered; refusals can still come early. New reasons: `no_answer` (the popup returned with no answer) and `unavailable` (the popup failed after an answer).
+  - (b) Any second process ever seen holding `code` or `answer` (a /proc scan every tick, and again right before the code is written) is refused as `second_writer`.
+  - (c) The helper reports `mesh-confirm/no-code <pid>` and exits 3; this is refused as `no_code`.
+  - Approval is bound to the single helper that held `code` when mesh wrote it.
+- **Lead re-run:**
+  - `test_mesh_d124`, `test_mesh_d121` and `test_mesh_d122` → `OK`;
+  - `make check` exit 0 (`Ran 667 tests`, `OK`, `scrub: 0 hits`, `audit: PASS`);
+  - validate passed; ruff `All checks passed!`;
+  - diff `mesh/` + `tests/`: 4 files, +146 / −58, plus the new `tests/test_mesh_d124.py`;
+  - no `mesh-confirm-*` or `mesh-wt-*` left.
+- **Changed reasons in old tests** (still refused, only the reason differs; 4 assertions): stolen code `timeout` → `second_writer`; silent popup, crashing helper and killed helper `timeout` → `no_answer`.
+- **Residual (D96, same user):**
+  - if the popup's own helper dies before opening `code` while the popup still returns ok, a lone thief helper could be bound;
+  - a thief reading `answer` could swallow the no-code line;
+  - without /proc, mesh falls back to one line, not no-code, a live pid, and the popup returned.
+- **For the PM:**
+  - `no_code` and `no_answer` are in the `confirm` docstring but not yet in the spec;
+  - each approval now takes about 1.5 s longer (the helper holds `answer` for 1.5 s before exiting);
+  - live check of the real tmux popup timing on the next QA run.

@@ -282,7 +282,7 @@ class OneAnswerTests(D121Case):
             op.stolen = thief.stdout.readline().strip()
 
         op = Operator(before=before)
-        self.assertEqual(self.run_confirm(op, timeout_s=3), "timeout")
+        self.assertEqual(self.run_confirm(op, timeout_s=3), "second_writer")  # D124: two processes held `code`
         self.assertEqual(len(op.stolen), layers.CONFIRM_LEN)
         self.assertIsNone(op.code)
         self.assertIn("no code", op.screen)
@@ -333,7 +333,7 @@ class RefusedAsBeforeTests(D121Case):
     def test_no_popup_is_unavailable_and_a_silent_popup_times_out(self):
         self.assertEqual(self.run_confirm(lambda argv, env, t: False, timeout_s=2), "unavailable")
         t0 = time.monotonic()
-        self.assertEqual(self.run_confirm(lambda argv, env, t: True, timeout_s=1), "timeout")
+        self.assertEqual(self.run_confirm(lambda argv, env, t: True, timeout_s=1), "no_answer")  # D124: it returned
         self.assertLess(time.monotonic() - t0, 5)
 
     def test_the_helper_alone_without_mesh_exits_and_writes_nothing(self):

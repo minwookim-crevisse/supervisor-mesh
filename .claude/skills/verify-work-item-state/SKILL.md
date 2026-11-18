@@ -162,9 +162,9 @@ alternatives (as WO-0020 did for O3-8, O3-9, G2a and ClockTies).
 
 ## 5. Sync record
 
-- Sync commit: `0501f50` (WO-0027, D100-D106); the design file as committed there.
+- Sync commit: `382cf02` (9a hook-identity text, D118-D123; no modelled change); the design file as committed there.
 - Design file `docs/designs/work-item-state-model.md` sha256
-  `713a13a6394eb56c524c65bfa4924ea35253ccbd99e0386d82a5479bb9353157`; the same value
+  `93d9a31de5405aab0662d58a0ef80a4349262348b46545bfdee10955292b2179`; the same value
   is `DESIGN_SHA256` in `scripts/formal-check.sh`. The hash decides, not the commit.
 - Covered: design sections 1 and 3-10 (invariant 12 as a run-time check only); section
   12 has no open items. Not covered: section 2 (the diagram). Per property, bound and

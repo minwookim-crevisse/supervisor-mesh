@@ -50,7 +50,7 @@ TOOLS="${TLA_TOOLS_DIR:-$HOME/.local/share/tlaplus}"
 
 # Sync point: the design version the model describes (the skill's sync record names it too).
 DESIGN="$ROOT/docs/designs/work-item-state-model.md"
-DESIGN_SHA256="713a13a6394eb56c524c65bfa4924ea35253ccbd99e0386d82a5479bb9353157"
+DESIGN_SHA256="93d9a31de5405aab0662d58a0ef80a4349262348b46545bfdee10955292b2179"
 
 # Pinned toolchain. JRE_SHA256 is the published Temurin archive (checked at install);
 # JRE_TREE_SHA256 is the manifest of that archive's extracted files (jre_tree_sha: every

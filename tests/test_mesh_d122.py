@@ -56,7 +56,7 @@ class F12Tests(D121Case):
             return True
 
         self.codes = []
-        self.assertEqual(self.run_confirm(popup, timeout_s=2), "timeout")
+        self.assertEqual(self.run_confirm(popup, timeout_s=2), "no_answer")  # D124: the popup returned, no answer
         self.assertEqual(len(self.codes), 1)
         self.assertNotEqual(self.codes[0], 0)
 
@@ -65,7 +65,7 @@ class F12Tests(D121Case):
             op.proc.kill()
             op.proc.wait()
 
-        self.assertEqual(self.run_confirm(Operator(on_code=on_code), timeout_s=2), "timeout")
+        self.assertEqual(self.run_confirm(Operator(on_code=on_code), timeout_s=2), "no_answer")  # D124
 
     def test_a_helper_that_times_out_sends_nothing_that_approves(self):
         op = Operator(on_code=lambda op: op.proc.wait(10), answer=lambda c: c)  # the operator never types in time

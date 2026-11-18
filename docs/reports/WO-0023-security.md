@@ -1,6 +1,6 @@
 # WO-0023 — security review of the MCP tool surface (security)
 
-Status: **review of 0501f50 complete; NOT PASS yet.** The PASS gate is a delta re-run against the WO-0028/WO-0030 commit (PM decision). Findings go to the PM. Fixes are backend work in WO-0030 (spec D108-D114).
+Status: **final gate on 382cf02: REWORK (one 🟠, F13) or PASS once the PM accepts F13 as a named residual** (see "Verdict"). Findings go to the PM; fixes are backend work.
 
 - Target: commit `0501f50`. The probes ran on a frozen `git archive` copy outside the repo. Its `mesh/*.py` and `.mcp.json` hashes equal the `0501f50` blobs (`git show | sha256sum`, empty diff), and `sha256sum -c` still passed after the runs.
 - Durable evidence (outside the repo): `~/.local/state/supervisor-mesh-security/WO-0023/`
@@ -94,6 +94,30 @@ Lead re-run totals:
 |---|---|---|---|---|---|
 | F11 | 🔴 | `mesh/cli.py:168-169`, `:203-204`; `layers.py:476-510` | before the PM session is pinned, a fabricated `<session>.jsonl` under `~/.claude/projects/<slug>/` plus a matching hook stdin is recorded, pins the fake session and locks out the real one (`session_not_pm`); further fabricated prompts are accepted | `D-N4.txt`: `fabricated_accepted: true`, `final_pm_session: fab-0001`, `errors_after_real: [session_not_pm]` | D118: every event must match the pinned PM agent's live projmux SessionID + TranscriptPath, fail closed. D119: forged `agent-hook ingest` = D96 residual + advisory deny |
 | F12 | 🟠 | `mesh/layers.py:525-549`, `confirm.py:48-52` | the plaintext code sits in `<tmp>/mesh-confirm-*/code`, and the work dir is in the popup argv; a same-user reader forges `answer`; a pre-created `answer.tmp` makes the helper fail (`FileExistsError`), and the forged answer then approves even when the operator refuses | `D-run-2.txt` N1e: `unexpectedly None: the operator refused, yet the forged answer approved` | D121 (revised): mesh keeps the hash; the code reaches the popup over a one-shot FIFO; RAW typed text comes back over a second FIFO; mesh compares; threat model stated (stops a model acting through mesh tools and the advisory denies, not arbitrary same-user code). Steal-and-relay is a named ACCEPTED-RISK |
+
+## Final gate — 382cf02 (D118-D123 + D122 reaper)
+- Frozen full archive `plug-382cf02/`, 61 hashes in `harness/plug-382cf02.sha`, `sha256sum -c` OK. Tests are in `finaltests/` (brief 4).
+- Lead re-run: `Ran 116 tests`, `FAILED (failures=1)`, exit 1 (`lead-rerun/F-run.txt`). The one failure is F13. Afterwards there was no `mesh-wt-*` or `mesh-confirm-*` dir in /tmp.
+
+| check | result |
+|---|---|
+| regression: R1-R10, brief-2 V/C/I, N3, N5 | PASS |
+| D119 deny `Bash(*agent-hook*ingest*)` | PASS (present with the other advisory rules) |
+| N6 work-order path: missing, absolute-outside, `../`, symlink out of root | PASS (refused; a real one is sent) |
+| N4 / D118 fabricated session, no SessionID (fail closed), D120 re-pin session | PASS. FACT: a symlinked transcript path that resolves (realpath) to the pinned file is accepted |
+| N1 / D121 + D122(1): forged answer, pre-existing FIFO or file, second writer, after popup exit, stolen code, helper failure, no plaintext on disk/argv/env, dir removed | PASS except F13 |
+| steal-and-relay | ACCEPTED-RISK (named in D121): approved, and the operator saw the real code |
+| N2 / D122(2): case fold + the 4 new names; `/compact` without a code | PASS. FACT: fullwidth and NFKC look-alikes are `command_invalid` |
+| D123: never-appearing prompt, double citation, older-prompt replay, cite after a newer prompt, ts bound, one usable event per entry | PASS. FACT: a later Bash-made candidate with the same text as the operator's prompt binds instead of the hook's (newest binds). The authorized text is the operator's own, so the effect is the same approval |
+| structural origin rule: human string or text list accepted; peer, task-notification, auto-continuation, no-origin, tool_result, sidechain, isMeta, unknown kind refused or skipped; wrapper-like text from a human counts as the operator's; no displacement | PASS |
+| D122(3) reaper: dead-owner marked dir reaped; a live owner, no marker, another mode, a symlink and a plain file are kept | PASS. FACT: confirm dirs from before the marker are never reaped (the one stale dir has since gone) |
+
+| # | sev | where (382cf02) | defect | repro (output) | suggested fix |
+|---|---|---|---|---|---|
+| F13 | 🟠 | `mesh/layers.py:734-746` (`_is_helper`), `:775-792` (`_judge`); `mesh/confirm.py:73-78` | `_is_helper` accepts ANY live pid whose argv[1] is the helper path. A same-user process that runs its own copy of the helper opens the code FIFO first, takes the code and answers. mesh APPROVES while the operator's real popup shows "no code received (D121); refused". D121 counts a stolen code as a *visible failure*, but the failure the operator sees here is a refusal while the action goes through | `F-run.txt`: `test_n1_a_thief_running_its_own_helper_instance` FAIL (approved) | judge only after the `display-popup -E` mesh started has returned; refuse when more than one helper pid ever held either FIFO; refuse when any helper reports "no code" (a third outcome on FIFO 2, or its exit status). This stays same-user (D96/D121), but it turns the misleading case into a refusal |
+
+## Verdict (382cf02)
+**REWORK, one item: F13 🟠.** Every other gate item passes: F1-F12 are fixed, and the D118-D123 controls hold. F13 is inside the stated same-user threat model (D96/D121), so the PM and operator may instead accept it as a named residual next to steal-and-relay. With that decision recorded, or with the fix and a re-run of `test_n1_a_thief_running_its_own_helper_instance`, this order is PASS.
 
 ## Delta run (PASS gate) — planned against the WO-0028/WO-0030 commit
 1. Re-run the harness and guard suite. The F1-F10 tests must flip to refusals.

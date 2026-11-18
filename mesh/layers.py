@@ -627,10 +627,12 @@ CONFIRM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 CONFIRM_LEN = 8
 CONFIRM_HELPER = Path(__file__).resolve().with_name("confirm.py")
 CONFIRM_JOIN_S = 15.0  # after the dir is gone: how long to wait for the popup to close
+CONFIRM_RETURN_S = 5.0  # D124: after an answer arrived, how long past the deadline the popup may take to return
 
 
 CONFIRM_DIR_VAR = "MESH_CONFIRM_DIR"  # the popup's env: the work dir (a path, not a secret; never in the helper argv)
 CONFIRM_MAGIC = "mesh-confirm/1"
+CONFIRM_NO_CODE = "mesh-confirm/no-code"  # D124: the popup's helper got no code (the third outcome)
 CONFIRM_POLL_S = 0.05
 CONFIRM_MAX_ANSWER = 256  # bytes: a longer answer is malformed
 
@@ -708,11 +710,12 @@ def reap_confirm_dirs() -> int:
     return removed
 
 
-def _proc_holders(fifo: os.stat_result) -> set[int] | None:
-    """The pids (other than this process) holding `fifo` open, from /proc; None where there is no /proc."""
+def _proc_holders(*fifos: os.stat_result) -> list[set[int]] | None:
+    """For each FIFO, the pids (other than this process) holding it open, from /proc; None where there is no /proc."""
     if not os.path.isdir("/proc/self/fd"):
         return None
-    me, held = os.getpid(), set()
+    me, want = os.getpid(), [(f.st_dev, f.st_ino) for f in fifos]
+    held: list[set[int]] = [set() for _ in fifos]
     for pid in os.listdir("/proc"):
         if not pid.isdigit() or int(pid) == me:
             continue
@@ -725,9 +728,10 @@ def _proc_holders(fifo: os.stat_result) -> set[int] | None:
                 st = os.stat(f"/proc/{pid}/fd/{fd}")
             except OSError:
                 continue
-            if (st.st_dev, st.st_ino) == (fifo.st_dev, fifo.st_ino):
-                held.add(int(pid))
-                break
+            key = (st.st_dev, st.st_ino)
+            for i, w in enumerate(want):
+                if key == w:
+                    held[i].add(int(pid))
     return held
 
 
@@ -772,26 +776,60 @@ def _same_fifo(path: str, want: os.stat_result) -> bool:
     return stat.S_ISFIFO(st.st_mode) and (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino)
 
 
-def _judge(buf: bytes, answer: os.stat_result, want: str) -> str | None:
-    """One answer line `<magic> <pid> <raw typed text>`, from the live helper pid that alone holds the FIFO."""
-    line, _, rest = buf.partition(b"\n")
-    if rest:
-        return "second_writer"
+def _parse(line: bytes) -> tuple[str, int, str] | None:
+    """One answer line: (`typed`, pid, raw typed text) for `<magic> <pid> <typed>`, (`no_code`, pid, "") for
+    `<no-code magic> <pid>` (D124), else None (malformed)."""
     try:
-        magic, pid_s, typed = line.decode("utf-8").split(" ", 2)
-    except (UnicodeDecodeError, ValueError):
-        return "malformed"
-    if magic != CONFIRM_MAGIC or not (pid_s.isascii() and pid_s.isdigit()) or len(pid_s) > 9:
-        return "malformed"
-    pid, holders = int(pid_s), _proc_holders(answer)
+        parts = line.decode("utf-8").split(" ", 2)
+    except UnicodeDecodeError:
+        return None
+    if len(parts) == 3 and parts[0] == CONFIRM_MAGIC:
+        kind = "typed"
+    elif len(parts) == 2 and parts[0] == CONFIRM_NO_CODE:
+        kind = "no_code"
+    else:
+        return None
+    pid_s = parts[1]
+    if not (pid_s.isascii() and pid_s.isdigit()) or len(pid_s) > 9:
+        return None
+    return kind, int(pid_s), parts[2] if kind == "typed" else ""
+
+
+def _received(pid: int, answer: os.stat_result) -> str | None:
+    """D121, checked the moment mesh reads the answer: it comes from a live helper pid that alone holds `answer`."""
+    held = _proc_holders(answer)
+    holders = None if held is None else held[0]
     if holders is not None and holders - {pid}:
         return "second_writer"
     if not _is_helper(pid) or (holders is not None and pid not in holders):
         return "popup_gone"
+    return None
+
+
+def _judge(typed: str, want: str) -> str | None:
     typed = typed.strip().upper()
     if not typed:
         return "none"
     return None if hmac.compare_digest(hashlib.sha256(typed.encode("utf-8")).hexdigest(), want) else "wrong"
+
+
+class _Watch:
+    """D124 (b): every process other than mesh seen holding `code` or `answer`, on any poll, ever; and the helper the
+    code was handed to (`bound`: the sole other holder of `code` when mesh wrote it, running the helper)."""
+
+    def __init__(self) -> None:
+        self.seen: set[int] = set()
+        self.bound: int | None = None
+        self.proc = os.path.isdir("/proc/self/fd")
+
+    def look(self, *fifos: os.stat_result) -> list[set[int]] | None:
+        held = _proc_holders(*fifos)
+        for pids in held or ():
+            self.seen |= pids
+        return held
+
+    def crowded(self) -> bool:
+        return len(self.seen) > 1
 
 
 def confirm(
@@ -801,13 +839,16 @@ def confirm(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> str | None:
-    """D113/D121: None when the operator typed the one-time code into the popup, else why not (unavailable | none |
-    wrong | timeout | tampered | second_writer | popup_gone | malformed). The code is made here (`secrets`) and only
-    its sha256 is kept; the plaintext reaches the popup helper once through the FIFO `code` in a fresh 0700 dir (never
-    a regular file, never an argv: the helper gets the dir in its env); the operator's RAW typed text comes back
-    through the FIFO `answer`, which mesh holds open for reading, and mesh hashes and compares it. One answer, only
-    while the helper pid lives and alone holds `answer`; a pre-existing or planted entry, a second writer or a second
-    write is refused; the dir is removed at once. A same-user process can still race the FIFOs (D96)."""
+    """D113/D121/D124: None when the operator typed the one-time code into the popup, else why not (unavailable |
+    none | wrong | timeout | tampered | second_writer | popup_gone | malformed | no_code | no_answer). The code is made
+    here (`secrets`) and only its sha256 is kept; the plaintext reaches the popup helper once through the FIFO `code`
+    in a fresh 0700 dir (never a regular file, never an argv: the helper gets the dir in its env); the operator's RAW
+    typed text comes back through the FIFO `answer`, which mesh holds open for reading, and mesh hashes and compares
+    it. One answer, only while the helper pid lives and alone holds `answer`; a pre-existing or planted entry, a second
+    writer or a second write is refused; the dir is removed at once. D124: mesh judges only after the popup it started
+    has returned (every line that arrives before that is read and counted); more than one process ever holding `code`
+    or `answer` is refused (the code is withheld when two hold `code`); the popup's helper reporting `no code` is
+    refused; only the helper the code was handed to can approve. A same-user process can still race the FIFOs (D96)."""
     work = tempfile.mkdtemp(prefix=CONFIRM_PREFIX)
     afd, runner_thread = None, None
     try:
@@ -821,20 +862,24 @@ def confirm(
         answer, code_st = os.fstat(afd), os.lstat(code_p)
         if not _same_fifo(answer_p, answer) or not stat.S_ISFIFO(code_st.st_mode):
             return "tampered"
-        started: list[bool] = []
+        returned: list[bool] = []
         argv = [sys.executable, str(CONFIRM_HELPER), str(int(timeout_s))]
         runner_thread = threading.Thread(
-            target=lambda: started.append(bool(popup(argv, {CONFIRM_DIR_VAR: work}, timeout_s))), daemon=True
+            target=lambda: returned.append(bool(popup(argv, {CONFIRM_DIR_VAR: work}, timeout_s))), daemon=True
         )
         deadline = clock() + timeout_s
         runner_thread.start()
-        buf = b""
+        watch, buf, got = _Watch(), b"", None  # got: (pid, typed) of the one answer, checked as it arrived
         while True:
             sleep(CONFIRM_POLL_S)
+            done = bool(returned)  # sampled before the read: whatever the popup's helper wrote is in the FIFO by now
             if sorted(os.listdir(work)) != ["answer", "code", OWNER_FILE] or not (
                 _same_fifo(answer_p, answer) and _same_fifo(code_p, code_st)
             ):
                 return "tampered"
+            watch.look(answer, code_st)
+            if watch.crowded():
+                return "second_writer"
             if code:  # written once, as soon as a reader has the FIFO open
                 try:
                     cfd = os.open(code_p, os.O_WRONLY | os.O_NONBLOCK)
@@ -842,6 +887,12 @@ def confirm(
                     cfd = None
                 if cfd is not None:
                     try:
+                        held = watch.look(code_st)  # the reader(s) the code is about to reach
+                        if watch.crowded():
+                            return "second_writer"  # withheld: two processes wait for it
+                        if held is not None and len(held[0]) == 1:
+                            pid = next(iter(held[0]))
+                            watch.bound = pid if _is_helper(pid) else None
                         if _same_fifo(code_p, os.fstat(cfd)):
                             os.write(cfd, code + b"\n")
                     finally:
@@ -853,15 +904,40 @@ def confirm(
                 pass
             if len(buf) > CONFIRM_MAX_ANSWER:
                 return "malformed"
+            if got is not None and buf:
+                return "second_writer"  # anything after the one answer, at any time before the popup returned
             if b"\n" in buf:
                 try:
                     buf += os.read(afd, CONFIRM_MAX_ANSWER + 1)  # anything already behind the first line
                 except BlockingIOError:
                     pass
-                return _judge(buf, answer, want)
-            if started and not started[0]:
-                return "unavailable"
-            if clock() >= deadline:
+                line, _, rest = buf.partition(b"\n")
+                if rest:
+                    return "second_writer"
+                parsed = _parse(line)
+                if parsed is None:
+                    return "malformed"
+                kind, pid, typed = parsed
+                if kind == "no_code":
+                    return "no_code"
+                why = _received(pid, answer)
+                if why is not None:
+                    return why
+                watch.seen.add(pid)
+                if watch.crowded():
+                    return "second_writer"
+                got, buf = (pid, typed), b""
+            if done:
+                if buf:
+                    return "malformed"  # a partial line and its writer gone
+                if not returned[0]:
+                    return "unavailable"
+                if got is None:
+                    return "no_answer"
+                if watch.proc and got[0] != watch.bound:  # not the helper the code was handed to
+                    return "popup_gone"
+                return _judge(got[1], want)
+            if clock() >= deadline + (CONFIRM_RETURN_S if got is not None else 0):
                 return "timeout"
     finally:
         if afd is not None:
