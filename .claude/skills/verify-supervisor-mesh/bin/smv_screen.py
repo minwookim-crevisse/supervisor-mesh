@@ -173,3 +173,21 @@ def drop_map(lines: list[str], patterns: dict) -> dict[int, str]:
                 for i in touched:
                     drops.setdefault(i, f"{name} (wrapped)")
     return drops
+
+
+MCP_SERVER_RE = re.compile(r"supervisor-mesh", re.I)
+MCP_BAD_RE = re.compile(r"\b(failed|disconnected|needs authentication|needs auth|pending|connecting|disabled)\b|✘",
+                        re.I)
+MCP_OK_RE = re.compile(r"(?<![a-z])connected\b|✔", re.I)
+
+
+def mcp_rows(text: str) -> list[tuple[int, str, str]]:
+    """(line index, line, connected | failed | unknown) for every screen line that names the supervisor-mesh server
+    in the `/mcp` dialog (a plugin server shows as `plugin:<plugin>:<server>`). A line with a failure word is never
+    read as connected."""
+    rows = []
+    for i, line in enumerate(lines_of(text)):
+        if MCP_SERVER_RE.search(line):
+            status = "failed" if MCP_BAD_RE.search(line) else "connected" if MCP_OK_RE.search(line) else "unknown"
+            rows.append((i, line, status))
+    return rows

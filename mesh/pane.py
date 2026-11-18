@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, replace
+from typing import Callable
 
 from . import layers
 from .layers import names  # noqa: F401  (the D85 whole-token match lives in the binding layer)
@@ -51,7 +52,7 @@ from .model import (
 )
 from .projmux import Agent, CwdRule, Projmux, ProjmuxUnavailable
 from .store import Store
-from .tmux import ScreenKind, Tmux, TmuxFailed, classify, holds
+from .tmux import ScreenKind, Tmux, TmuxFailed, classify, holds, prompt_text, valid_pane_id
 
 MAX_LEN = 512
 TOOL = "pane_command"
@@ -102,8 +103,12 @@ class Target:
 
 
 class PaneCommand:
-    def __init__(self, store: Store, pmx: Projmux, tmux: Tmux, root, own_pane: str | None, at: str):
+    def __init__(
+        self, store: Store, pmx: Projmux, tmux: Tmux, root, own_pane: str | None, at: str,
+        confirm: Callable[[], None] | None = None,
+    ):  # fmt: skip
         self.store, self.pmx, self.tmux, self.root, self.own_pane, self.at = store, pmx, tmux, root, own_pane, at
+        self.confirm = confirm  # D113: raises the refusal unless the operator typed the popup code
 
     # -- refusals
     def _refuse(self, caller: Caller, code: RefusalCode, detail: str, item_id: str | None = None):
@@ -147,6 +152,10 @@ class PaneCommand:
                 f"the lead's pane is not idle ({kind.value}); a trust or permission prompt is never answered",
                 item_id,
             )
+        if command_name(command) in layers.PRIVILEGED_COMMANDS:  # D113: a privilege-changing command
+            if self.confirm is None:
+                self._refuse(caller, RefusalCode.CONFIRM_FAILED, "no confirmation channel (D113)", item_id)
+            self.confirm()
         with self.store.locked() as txn:  # 2: consume, ATTEMPTING
             binding = self._check_event(caller, txn.doc, event, role, command, item_id)
             doc = layers.consume(txn.doc, event, TOOL, target.agent.uid, "attempting")
@@ -202,6 +211,10 @@ class PaneCommand:
             self._refuse(caller, RefusalCode.FACT_UNAVAILABLE, "projmux is unavailable", item_id)
         if pane is None or not pane.tmux_id:
             self._refuse(caller, RefusalCode.TARGET_INVALID, "the lead's pane has no tmux pane", item_id)
+        if not valid_pane_id(pane.tmux_id):  # D116
+            self._refuse(
+                caller, RefusalCode.TARGET_INVALID, "the lead's tmux pane id is not of the form %<digits>", item_id
+            )
         return Target(agent, pane.tmux_id)
 
     def _pane_kind(self, target: Target) -> ScreenKind:
@@ -228,8 +241,15 @@ class PaneCommand:
 
     def _clear(self, target: Target) -> None:
         """An abort after typing: C-u erases the input line, so the lead's box is not left holding our text (never
-        Enter). Best effort: a failure here is already an abort."""
+        Enter). D116: only when the prompt line is visible: a C-u into a trust or permission dialog could act on it.
+        Best effort: a failure here is already an abort."""
         try:
+            screen = self.tmux.capture(target.tmux_id)
+            if prompt_text(screen) is None or classify(screen) in (
+                ScreenKind.TRUST_PROMPT,
+                ScreenKind.PERMISSION_PROMPT,
+            ):
+                return
             self.tmux.clear_line(target.tmux_id)
         except TmuxFailed:
             pass

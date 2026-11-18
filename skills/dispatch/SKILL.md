@@ -12,8 +12,9 @@ Dispatch a task to a role lead over projmux. `$ARGUMENTS` = `<role> <task…>` (
 ## Preferred: the supervisor-mesh MCP server
 When the project was set up with `mesh_init` (it has `.mesh/state.json`) and the `supervisor-mesh` MCP server is connected (`/mcp`), dispatch through the work-item tools instead of composing the message by hand:
 1. The task needs a work item in `ready`: `work_new` (`mcp__plugin_supervisor-mesh_supervisor-mesh__work_new`) with goal, done criteria, role and type, then `work_transition` verb `ready`.
-2. `work_dispatch` (`mcp__plugin_supervisor-mesh_supervisor-mesh__work_dispatch`) with the item id. It prepends the same standard header as step 3 below, resolves the role's live agent (label `role=<role>`, this project's cwd, Running), records the send before it runs and sends it with `projmux agent message send`; a failed send stays pending and the next call replays it with the same message-ref.
-3. Show the tool result (item id, message-ref, `sent`) to the operator. A refusal is an `isError` result naming the reason: report it, do not work around it.
+2. Write the order (mission, done criteria, read and write sets, depends, report target) to the work-order file `docs/work-orders/<item id>.md` first: the order lives in the work-order file, never in the message.
+3. `work_dispatch` (`mcp__plugin_supervisor-mesh_supervisor-mesh__work_dispatch`) with the item id. It sends the same standard header as step 3 below plus the item id, its message-ref and the absolute work-order file path (at most 4096 bytes in all, the projmux message limit: a longer message is refused before anything is recorded, never split), resolves the role's live agent (label `role=<role>`, this project's cwd, Running), records the send before it runs and sends it with `projmux agent message send`; a failed send stays pending and the next call replays it with the same message-ref.
+4. Show the tool result (item id, message-ref, `sent`) to the operator. A refusal is an `isError` result naming the reason: report it, do not work around it.
 The tools refuse when the caller is not the PM pane (label `role=pm`). Do NOT auto-spawn here either: no live lead = refused.
 CLI fallback with the same behaviour: `.mesh/bin/mesh work_dispatch --item-id <WO-id>`.
 
@@ -21,7 +22,7 @@ CLI fallback with the same behaviour: `.mesh/bin/mesh work_dispatch --item-id <W
 1. **Resolve the target.** `projmux get agents -o json`; find the item with `metadata.labels.role == <role>` (or named `role-<role>`) whose `spec.workspace.cwd == ${CLAUDE_PROJECT_DIR}` and `status.phase == "Running"`. Never match on the label alone — several repos can share one projmux project.
    No such agent (absent, Offline or Failed) → 🔴 STOP with: "role <role> has no pane — run /supervisor-mesh:spawn-roles (or /supervisor-mesh:add-agent for a new role) first." Do NOT auto-spawn. dispatch is send-only; explicit mesh setup is the ritual (no silent failure, no silent creation).
 2. **Tracker row.** If the project keeps a tracker, confirm the work order has a row. No row = no dispatch (talk-only dispatch is lost work). Only the orchestrator writes the tracker.
-3. **Compose the order** with this header prepended verbatim, then the task (read set as absolute paths, mission, DoD as captured evidence, deliverables, report target):
+3. **Compose the message** with this header prepended verbatim, then a pointer to the work-order file: the item id, a message-ref and the file's absolute path. The task itself (read set as absolute paths, mission, DoD as captured evidence, deliverables, report target) lives in the work-order file; projmux refuses a message over 4096 bytes, so never inline the order:
 
    ```
    [supervisor-mesh work order]

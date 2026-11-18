@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from . import defaults, tracker
+from . import defaults, layers, tracker
 from .model import empty_doc
 from .store import Store
 
@@ -59,9 +59,20 @@ STACK_FILES = {
 }
 
 
+OUTSIDE_NOTE = "resolves outside the project root (a symlink): refused, nothing is written (D111)"
+
+
+def refused(target: Path, rel: str, log: "Log") -> bool:
+    """True (and a REFUSE row) when a write to `rel` would land outside the project root."""
+    if layers.contained(target, rel):
+        return False
+    log.add("REFUSE", rel, OUTSIDE_NOTE)
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class Row:
-    action: str  # CREATE | MERGE | SKIP
+    action: str  # CREATE | MERGE | SKIP | REFUSE (D111: the target resolves outside the project root)
     path: str  # relative to the target, never absolute
     note: str = ""
 
@@ -103,6 +114,8 @@ def detect_stack(target: Path) -> str | None:
 
 def write_new(target: Path, rel: str, content: str, log: Log, mode: int | None = None) -> None:
     dest = target / rel
+    if refused(target, rel, log):
+        return
     if dest.exists():
         log.add("SKIP", rel, "exists")
         return
@@ -117,6 +130,8 @@ def write_new(target: Path, rel: str, content: str, log: Log, mode: int | None =
 def merge_agents(target: Path, log: Log) -> None:
     tpl = (TEMPLATES / "AGENTS.md").read_text(encoding="utf-8")
     dest = target / "AGENTS.md"
+    if refused(target, "AGENTS.md", log):
+        return
     if not dest.exists():
         write_new(target, "AGENTS.md", tpl.replace("\n", f"\n{AGENTS_MARKER}\n", 1), log)
         return
@@ -133,6 +148,8 @@ def merge_agents(target: Path, log: Log) -> None:
 
 def merge_gitignore(target: Path, log: Log) -> None:
     dest = target / ".gitignore"
+    if refused(target, ".gitignore", log):
+        return
     have = dest.read_text(encoding="utf-8").splitlines() if dest.exists() else []
     missing = [line for line in GITIGNORE_LINES if line not in have]
     if not missing:
@@ -147,12 +164,14 @@ def merge_gitignore(target: Path, log: Log) -> None:
 
 def merge_package_scripts(target: Path, log: Log) -> None:
     dest = target / "package.json"
+    if refused(target, "package.json", log):
+        return
     if not dest.exists():
         log.add("SKIP", "package.json", "absent — create it with your package manager, then rerun init")
         return
     raw = dest.read_text(encoding="utf-8")
-    pkg = json.loads(raw)
-    wanted = json.loads((TEMPLATES / "constraints/typescript/package-scripts.json").read_text(encoding="utf-8"))
+    pkg = layers.parse_json(raw)
+    wanted = layers.parse_json((TEMPLATES / "constraints/typescript/package-scripts.json").read_text(encoding="utf-8"))
     scripts = pkg.setdefault("scripts", {})
     added = [k for k in wanted if k not in scripts]
     if not added:
@@ -172,6 +191,8 @@ PYPROJECT_TABLES = {"[tool.ruff]": "pyproject.ruff.toml", "[tool.mypy]": "pyproj
 def merge_pyproject(target: Path, log: Log) -> None:
     """Append each primed table that is absent; never touch a table the project already has."""
     dest = target / "pyproject.toml"
+    if refused(target, "pyproject.toml", log):
+        return
     existed = dest.exists()
     text = dest.read_text(encoding="utf-8") if existed else ""
     added, kept = [], []
@@ -257,7 +278,8 @@ if __name__ == "__main__":
 #                         refreshed when the plugin moves, so state.json and the hook hold no absolute path)
 #   .claude/settings.json the section-9a UserPromptSubmit hook and the D96 `permissions.deny` rules, an additive merge
 #                         (an existing key is never replaced; our hook entry is recognised by its command and refreshed
-#                         when its command is not the current one; a deny rule by its exact text; a re-run adds nothing)
+#                         when its command is not the current one; a deny rule by its exact text; a re-run adds nothing;
+#                         the pre-D107 `.mesh/**` wildcards mesh wrote are replaced by the narrowed rules)
 # Dry run and apply are separate calls: the dry run returns `plan_id` (a hash of the rows and the import mapping);
 # apply recomputes the plan and refuses when it differs, so the PM applies exactly what the operator saw.
 
@@ -277,6 +299,10 @@ MESH_GITIGNORE = "state.lock\n*.tmp\nevents.jsonl\nrefusals.jsonl\nruns/\nbin/\n
 
 class PlanChanged(Exception):  # noqa: N818
     """apply: the recomputed plan differs from the dry run the operator saw."""
+
+
+class OutsideRoot(Exception):  # noqa: N818
+    """apply: a planned write resolves outside the project root (D111); nothing was written."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +343,8 @@ def launcher_health(root: Path, plugin_root: Path) -> str:
 def write_launcher(root: Path, plugin_root: Path, log: Log) -> None:
     rel = ".mesh/bin/mesh"
     dest, want = root / rel, _launcher(plugin_root)
+    if refused(root, rel, log):
+        return
     try:
         have = dest.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -331,9 +359,22 @@ def write_launcher(root: Path, plugin_root: Path, log: Log) -> None:
     log.add("CREATE" if have is None else "MERGE", rel, "" if have is None else "launcher refreshed")
 
 
-# D96 host rules: the PM model cannot run the hook command itself or write .mesh/ with its file tools. Recognised by
-# exact text (the marker of an additive merge): an existing rule, or any other key, is never replaced.
-DENY_RULES = ("Bash(*mesh* event record*)", "Write(.mesh/**)", "Edit(.mesh/**)")
+# D96 host rules, narrowed by D107: the PM model cannot run the hook command itself or write mesh's own record files
+# with its file tools; .mesh/config.toml stays editable (D100 pins its hash at `ready`). Recognised by exact text (the
+# marker of an additive merge): an existing rule, or any other key, is never replaced.
+DENY_RULES = (
+    "Bash(*mesh* event record*)",
+    "Bash(*tmux*send-keys*)",  # D113, advisory: the models do not type into panes; mesh's server process does
+    "Bash(*tmux*paste-buffer*)",
+    "Write(.mesh/state.json)",
+    "Edit(.mesh/state.json)",
+    "Write(.mesh/events.jsonl)",
+    "Edit(.mesh/events.jsonl)",
+    "Write(.mesh/refusals.jsonl)",
+    "Edit(.mesh/refusals.jsonl)",
+)
+# The pre-D107 wildcards mesh itself wrote: a re-run drops exactly these (every other user rule is kept, in order).
+LEGACY_DENY_RULES = ("Write(.mesh/**)", "Edit(.mesh/**)")
 
 
 def _hook_entries(prompt: list):
@@ -350,6 +391,8 @@ def merge_hook(root: Path, log: Log) -> None:
     added, our own hook entry is refreshed when its command is not the current one, nothing else is touched."""
     rel = ".claude/settings.json"
     dest = root / rel
+    if refused(root, rel, log):
+        return
     entry = {"hooks": [{"type": "command", "command": HOOK_COMMAND, "timeout": 10}]}
     if not dest.exists():
         if not log.dry:
@@ -360,7 +403,7 @@ def merge_hook(root: Path, log: Log) -> None:
         return
     raw = dest.read_text(encoding="utf-8")
     try:
-        data = json.loads(raw)
+        data = layers.parse_json(raw)
     except ValueError:
         data = None
     hooks = data.get("hooks", {}) if isinstance(data, dict) else None
@@ -379,6 +422,10 @@ def merge_hook(root: Path, log: Log) -> None:
         for h in ours:
             h["command"] = HOOK_COMMAND
         notes.append("operator-event hook refreshed")
+    legacy = [r for r in deny if r in LEGACY_DENY_RULES]
+    if legacy:
+        deny = [r for r in deny if r not in LEGACY_DENY_RULES]
+        notes.append(f"-{len(legacy)} legacy .mesh/** deny rules (D107)")
     missing = [r for r in DENY_RULES if r not in deny]
     if missing:
         notes.append(f"+{len(missing)} deny rules")
@@ -408,6 +455,8 @@ def _legacy_preview(root: Path):
 def ensure_state(root: Path, log: Log) -> dict:
     """state.json, and the legacy import ONCE: only into a document with no items and no legacy rows yet."""
     store, rel = Store(root / ".mesh"), ".mesh/state.json"
+    if refused(root, rel, log):
+        return {"status": "none", "rows": 0, "mapping": [], "skipped": []}
     preview = _legacy_preview(root)
     legacy = {r.id: r for r in preview.rows} if preview else {}
     info = {
@@ -469,4 +518,7 @@ def mesh_init(root: Path, plugin_root: Path, stack: str, apply: bool, plan_id: s
         return preview
     if plan_id != preview.plan_id:
         raise PlanChanged("the project changed since the dry run; run mesh_init without apply again and re-show it")
+    outside = [r.path for r in preview.rows if r.action == "REFUSE"]
+    if outside:
+        raise OutsideRoot(f"refused: {', '.join(outside)} resolve outside the project root (D111); nothing was written")
     return _bootstrap(root, plugin_root, stack, dry_run=False)

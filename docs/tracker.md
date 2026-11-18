@@ -32,8 +32,10 @@
 | WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | waiting | — |
 | WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | pass (65af1b8 pushed by ship; origin/main = 65af1b8, PM-verified) | — |
 | WO-0027 | Re-sync TLA+ model to D100 (config hash at ready) + D101 (PM self-review reject), `docs/work-orders/2026-10-29-state-model-resync.md` method | qa | — (∥ WO-0022) | pass (PM gate 2026-11-18: make formal 68 runs 0 FINDING 0 UNEXPECTED; variants 49/49; D100-D106; unit gate excludes 3 W5-touched modules, full make check re-run after W5) | `docs/reports/WO-0027-qa.md` |
-| WO-0028 | D107: narrow the D96 deny rule to .mesh/state.json, events.jsonl, refusals.jsonl (config.toml stays editable; D100 pins it) | backend | WO-0029 | waiting | `docs/reports/WO-0022-backend.md` (addendum) |
-| WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | dispatched | — |
+| WO-0028 | D107: narrow the D96 deny rule to .mesh/state.json, events.jsonl, refusals.jsonl (config.toml stays editable; D100 pins it) | backend | WO-0029 | pass (PM-checked DENY_RULES 2026-11-18; 533 tests) | `docs/reports/WO-0022-backend.md` (addendum) |
+| WO-0030 | Security fixes D108-D112 (WO-0023 F1-F7), `docs/designs/mcp-server-spec.md` | backend | WO-0028 | pass (PM gate 2026-11-18: make check 0, 591 tests; deviations accepted as D117) | `docs/reports/WO-0030-backend.md` |
+| WO-0031 | Local checkpoint commit: WO-0028 + WO-0030 + QA WO-0024 skill build + specs/reports, NO push | ship | WO-0030 | dispatched | — |
+| WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | pass (0501f50 local, not pushed; PM-verified) | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).
 
@@ -43,5 +45,6 @@ Batch V = WO-0016 ∥ WO-0017 (qa lead, disjoint files; integration gate = PM ru
 Design findings G1-G8, F1, F2, O3-8, O3-9, inv 10, N1 decided 2026-10-29 (D65-D76). Batch W = WO-0020 ∥ WO-0021 (integration gate = PM runs `make check` + `make formal`).
 Batch M (MCP MVP 0.2.0, spec `docs/designs/mcp-server-spec.md`, D77-D80): WO-0020 ∥ WO-0022 → WO-0023 ∥ WO-0024 → PM gate (make check + make formal + live evidence) → WO-0025.
 Pilot (operator 2026-11-18): project `mesh-pilot` = Tiny Ledger (TS split-expense library + CLI). First 1-2 items run on 0.1.2 as the baseline (manual tracker); the rest on 0.2.0 (MCP). Compare rework count, PASS reversals and operator interventions; result feeds WO-0024.
+New-project adoption (operator 2026-11-18): wait for 0.2.0 (MCP) and adopt from it; no new project on 0.1.2. Pilot phase 2 also starts on 0.2.0.
 Follow-ups (not dispatched): smv.py package split, FakeSlack helper, shared role lookup, formal runner/probes module, 5 skill doc notes (qa); live runs of the other five features and `marketplace remove` (qa).
 Design for WO-0009..0015: `docs/designs/pm-led-onboarding.md` (APPROVED 2026-10-14).

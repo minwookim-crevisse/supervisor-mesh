@@ -12,12 +12,11 @@ included. An unreadable registry reports every plugin missing.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import runner
+from . import layers, runner
 
 PLUGINS = ("mattpocock-skills", "pstack")
 D87 = ("gstack", *PLUGINS)
@@ -56,7 +55,7 @@ def _is_file(path: Path) -> bool:
 
 def _registered(registry: Path, root: Path) -> set[str]:
     try:
-        data = json.loads(registry.read_text(encoding="utf-8"))
+        data = layers.parse_json(registry.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
         return set()
     plugins = data.get("plugins") if isinstance(data, dict) else None
@@ -136,7 +135,7 @@ def declared_marketplaces(env, cwd: Path) -> set[str]:
     if not r.ok:
         return set()
     try:
-        data = json.loads(r.out)
+        data = layers.parse_json(r.out)
     except ValueError:
         return set()
     if isinstance(data, dict):
@@ -150,7 +149,7 @@ def installed_version(home: Path | None, root: Path, plugin: str) -> str | None:
     if home is None:
         return None
     try:
-        data = json.loads((home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        data = layers.parse_json((home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
         return None
     plugins = data.get("plugins") if isinstance(data, dict) else None

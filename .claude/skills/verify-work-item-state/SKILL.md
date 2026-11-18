@@ -162,9 +162,7 @@ alternatives (as WO-0020 did for O3-8, O3-9, G2a and ClockTies).
 
 ## 5. Sync record
 
-- Sync commit: none yet. The design file was uncommitted at sync time (HEAD `65af1b8`;
-  WO-0027, D100-D106); the lead moves this line to the commit that carries it once Ship
-  commits it.
+- Sync commit: `0501f50` (WO-0027, D100-D106); the design file as committed there.
 - Design file `docs/designs/work-item-state-model.md` sha256
   `713a13a6394eb56c524c65bfa4924ea35253ccbd99e0386d82a5479bb9353157`; the same value
   is `DESIGN_SHA256` in `scripts/formal-check.sh`. The hash decides, not the commit.

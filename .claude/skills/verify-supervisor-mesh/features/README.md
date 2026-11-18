@@ -6,14 +6,17 @@ checkout under test as the working directory and `SMV=.claude/skills/verify-supe
 
 ## Baseline preconditions
 
-- Launch and install are done exactly as `../SKILL.md` (Launch) describes, and `SMV_RUN` is exported.
+- Launch and install are done exactly as `../SKILL.md` (Launch) describes, and `SMV_RUN` is exported. The plugin
+  comes from a commit export under the scratch marketplace `smv-<run-id>` (`mkt-project`), never from a marketplace
+  named `supervisor-mesh`; `PLUGIN_ID` is the `supervisor-mesh@smv-<run-id>` that `mkt-project` printed.
 - `"$SMV" plugin-check` and `"$SMV" doctor` both end with `PASS`.
 - The scratch project is fresh: before `init` it holds only `.git/` and the `.claude/settings.json` that the
   project-scope marketplace declaration and install wrote (`"$SMV" hash --label pre-init` reports `files=1`).
 - The PM pane is the only agent in the run's project (`"$SMV" agents` reports 1) until spawn-roles runs. Later panes
   count only when the creator rule records them (`../SKILL.md`, Hard rules).
 - To cover several features in one run, use this order, because each one leaves state the next relies on: init,
-  add-agent, spawn-roles, dispatch, gc, slack-setup.
+  add-agent, spawn-roles, dispatch, gc, slack-setup. The MCP journey (`mcp.md`) runs init through `mesh_init`
+  instead of the slash command, so it needs its own run, launched with `--pm-role`.
 - Never drive a pane, project or process this run did not create; `smv` refuses agent uids missing from `run.json`.
 
 ## Driving conventions
@@ -47,7 +50,8 @@ checkout under test as the working directory and `SMV=.claude/skills/verify-supe
 - Report an unreachable path with the attempted command, the exit code and the unmet precondition. Report a stop (10 to
   13) with the capture path and the operator's answer (smv only infers that one came; ask the operator for it).
 - Do not report a skipped entry point as verified through a different path. The marketplace is always declared with the
-  CLI at project scope; report it as a stand-in for the slash `/plugin marketplace add`, which is not exercised.
+  CLI at project scope, from a commit export under a scratch name; report it as a stand-in for the slash
+  `/plugin marketplace add` and for the README's GitHub source, neither of which is exercised.
 
 ## Feature entry contract
 
@@ -73,5 +77,9 @@ summary lines), required state, commands and observable proof.
 - [Dispatch](./dispatch.md) covers delivery with the standard header, the role's reply, and the refusal for a role with
   no pane.
 - [GC](./gc.md) covers structure, doc and code drift reports with nothing deleted.
+- [MCP server](./mcp.md) covers spec acceptance 4 (install, `/mcp` connected, `mesh_init` dry run and apply, one
+  item walked from `new` to `close` with a passing `verify`) and the backend's live checks (a) to (g): pane identity
+  env, projmux JSON shapes, message-ref dedup and the hook, the marketplace listing shape, the tool-name prefix, the
+  idle interaction kind, and all eleven tools.
 - [Slack setup](./slack-setup.md) covers the bridge against FakeSlack only: check, send, the armed watcher, the
   allowlist, untrusted text, an unread `.env`, and token hygiene.

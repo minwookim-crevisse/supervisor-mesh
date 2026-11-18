@@ -4,7 +4,7 @@ callers: the verification (submitted or merged commit), the bugfix repro (base c
   with git.worktree(sha):                        a detached worktree outside the project: the shared tree is untouched
       prepare (D91), when configured: the same runner rules; not a pass -> it is the only run returned
       for each command: runner.run(argv, cwd=worktree, timeout=command.timeout_s, env=allowlist)
-                        exit 0 but a `fail_if_output` regex matches a line -> FAIL, that line as evidence (D92)
+                        exit 0 but a line contains a `fail_if_output` literal -> FAIL, that line as evidence (D92)
   worktree removed in `finally`; each command's output goes to .mesh/runs/<run_id>/<n>-<kind>.log (0600), never to a
   tool result, stderr or state.json; a log that cannot be written makes that command FAIL.
 

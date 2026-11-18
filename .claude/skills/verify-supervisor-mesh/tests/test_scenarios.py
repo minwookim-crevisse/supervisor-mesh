@@ -6,10 +6,9 @@ import os
 import subprocess
 import unittest
 
-from harness import CHECKOUT, PLUGIN_ID, RULE, SKILL, TESTS, Env, ready_screen, uid
+from harness import CHECKOUT, RULE, SKILL, TESTS, Env, ready_screen, uid
 from test_screen import PERMISSION
 
-INSTALL = f"/plugin install {PLUGIN_ID}"
 T0 = dt.datetime(2026, 10, 22, 1, 0, 0, tzinfo=dt.timezone.utc)
 
 
@@ -23,7 +22,8 @@ def out(r) -> str:
 
 class Cleanup(unittest.TestCase):
     def install_row(self, e: Env) -> None:
-        e.state["plugin_rows"] = [{"id": PLUGIN_ID, "scope": "project", "projectPath": str(e.proj), "version": "x"}]
+        e.state["plugin_rows"] = [{"id": e.plugin_id, "scope": "project", "projectPath": str(e.proj),
+                                   "version": "x"}]
         e.save()
 
     def test_y01_failed_uninstall_keeps_proj_and_rerun_retries(self):
@@ -160,7 +160,7 @@ class Send(unittest.TestCase):
         e.make_run()
         e.pane()["on_enter"] = ["ignore"]
         e.save()
-        r = e.smv("send", "--text", INSTALL)
+        r = e.smv("send", "--text", f"/plugin install {e.plugin_id}")
         self.assertEqual(r.returncode, 3, out(r))
         self.assertEqual(sum(k == ["Enter"] for k in e.keys_sent()), 1)
         log = (e.run_root / "evidence/sends.log").read_text()
@@ -458,13 +458,6 @@ class Commands(unittest.TestCase):
             r = e.smv("mkt-project")
             self.assertEqual(r.returncode, 0, out(r))
         self.assertIs(e.run_json()["marketplace"]["registry_preexisting"], False)
-
-    def test_exit_21_on_another_marketplace(self):
-        e = Env(self.addCleanup)
-        e.make_run()
-        e.state["marketplaces"] = [{"name": "supervisor-mesh", "source": "directory", "path": str(e.base / "other")}]
-        e.save()
-        self.assertEqual(e.smv("mkt-project").returncode, 21)
 
     def test_y20_hash_diff_normalises_allowed_paths(self):
         e = Env(self.addCleanup)

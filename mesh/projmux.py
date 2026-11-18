@@ -20,7 +20,6 @@ Error text names the subcommand and exit code only, never projmux's own output (
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -29,7 +28,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
-from . import runner
+from . import layers, runner
 from .model import MeshError
 
 TIMEOUT_S = 15.0
@@ -123,7 +122,7 @@ class Projmux:
         if not r.ok:
             raise ProjmuxUnavailable(f"projmux {what} failed (exit {r.code})", hint="is projmux running?")
         try:
-            data = json.loads(r.out)
+            data = layers.parse_json(r.out)
         except ValueError:
             raise ProjmuxUnavailable(f"projmux {what}: output is not JSON") from None
         items = data.get("items") if isinstance(data, dict) else None

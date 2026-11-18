@@ -176,22 +176,18 @@ class DispatchHeaderTests(unittest.TestCase):
                 scope=Scope(read_set=("docs/a.md", "/abs/b.md"), write_set=("src/x.py",), report="docs/reports/r.md"),
             ),
         )
-        text = dispatch.compose(item, Path("/work/proj"))
-        self.assertEqual(text, dispatch.compose(item, Path("/work/proj")))
+        text = dispatch.compose(item, Path("/work/proj"), "mesh-WO-0001-d1")
+        self.assertEqual(text, dispatch.compose(item, Path("/work/proj"), "mesh-WO-0001-d1"))
         self.assertTrue(text.startswith(dispatch.HEADER + "\n\n"))
         for part in (
-            "Work item: WO-0001 (role backend, type feature, contract v2)",
-            "Mission: add the export",
-            "- tests pass",
-            "- lint clean",
-            "- /work/proj/docs/a.md",
-            "- /abs/b.md",
-            "- src/x.py",
-            "Depends on: WO-0007",
+            "Work item: WO-0001 (role backend, type feature, contract v2); message-ref mesh-WO-0001-d1",
+            "Work order: /work/proj/docs/work-orders/WO-0001.md (read it first",
             "Report: /work/proj/docs/reports/r.md",
             "work_transition",
         ):
             self.assertIn(part, text)
+        for inline in ("add the export", "tests pass", "/work/proj/docs/a.md", "src/x.py", "WO-0007"):
+            self.assertNotIn(inline, text)  # the order lives in the work-order file, never in the message
         self.assertNotEqual(dispatch.text_sha256(text), dispatch.text_sha256(text + " "))
 
     def test_the_composer_does_no_io(self):
@@ -229,7 +225,7 @@ class WorkDispatchTests(WireCase):
         self.fakes.agent("be-uid", "backend", self.root)
         result = self.dispatch(MESH_FAKE_PEEK=str(self.root / ".mesh" / "state.json"))
         self.assertTrue(result.ok, result.data)
-        text = dispatch.compose(self.store.read().doc.items["WO-0001"], self.root)
+        text = dispatch.compose(self.store.read().doc.items["WO-0001"], self.root, "mesh-WO-0001-d1")
         (action,) = self.actions()
         self.assertEqual(
             dict(action.payload),
@@ -303,14 +299,13 @@ class WorkDispatchTests(WireCase):
         self.fakes.agent("be-uid", "backend", self.root)
         self.fakes.set(send_code=1)
         self.dispatch()
-        with self.store.locked() as txn:  # the contract changed since: the recorded hash no longer matches
+        with self.store.locked() as txn:  # the report moved since: the recorded hash no longer matches
             item = txn.doc.items["WO-0001"]
             from dataclasses import replace
 
+            scope = replace(item.contract.scope, report="docs/reports/elsewhere.md")
             txn.commit(
-                replace(
-                    txn.doc, items={"WO-0001": replace(item, contract=replace(item.contract, goal="something else"))}
-                )
+                replace(txn.doc, items={"WO-0001": replace(item, contract=replace(item.contract, scope=scope))})
             )
         self.fakes.set(send_code=0)
         out = tools.replay_dispatches(self.ctx())

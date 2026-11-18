@@ -39,23 +39,36 @@ except ImportError:  # not POSIX: no run.json lock (Known gaps)
 
 sys.dont_write_bytecode = True  # the FakeSlack import must never write __pycache__ into the checkout (lead tree)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from smv_screen import (SCOPE_OPTION, box_holds, box_is_empty, drop_map, highlighted, input_box,  # noqa: E402
-                        keep_lines, lines_of, menu_options, permission_mode, screen_state)
+from smv_screen import (  # noqa: E402
+    SCOPE_OPTION,
+    box_holds,
+    box_is_empty,
+    drop_map,
+    highlighted,
+    input_box,
+    keep_lines,
+    lines_of,
+    mcp_rows,
+    menu_options,
+    permission_mode,
+    screen_state,
+)
 
-PLUGIN_ID = "supervisor-mesh@supervisor-mesh"
-MARKETPLACE = "supervisor-mesh"
-INSTALL_LINE = f"/plugin install {PLUGIN_ID}"
+PLUGIN_NAME = "supervisor-mesh"  # the plugin's own name (marketplace.json plugins[0].name): never renamed
+# The user-level marketplace of this name (GitHub source) must end every run exactly as it started: a project-scope
+# `marketplace add` of the same name rewrites that shared registry entry by name. So a run never adds, removes or
+# declares this name; it exports the commit under test and installs it from a scratch-named marketplace.
+GUARD_MARKETPLACE = "supervisor-mesh"
+SCRATCH_PREFIX = "smv-"
+SCRATCH_NAME_RE = re.compile(r"smv-[a-z0-9][a-z0-9-]{0,62}")
+MKT_MANIFEST = ".claude-plugin/marketplace.json"
 CREATOR = "projmux.io/creator-agent"
 # user config files: compared by whole-file sha256 + keyed per-key digests; never copied, values never stored
 USER_SETTINGS = "settings.json"
 USER_REGISTRY = ("plugins/known_marketplaces.json", "plugins/installed_plugins.json")
-RUN_OWNED = {  # registry key paths this run's project-scope declaration and install write: (top key, second key)
-    "plugins/known_marketplaces.json": (MARKETPLACE, None),
-    "plugins/installed_plugins.json": ("plugins", PLUGIN_ID),
-}
 SLACK_DEFAULT_STATE = Path.home() / ".local/state/supervisor-mesh-slack"  # the bridge's default SLACK_STATE_DIR
 ALLOW_KINDS = ("ADDED", "MISSING", "CHANGED")
-SHIPPED = (".claude-plugin", "skills", "agents", "templates", "docs/core")
+SHIPPED = (".claude-plugin", "skills", "agents", "templates", "docs/core", "mesh", ".mcp.json")  # dirs or files
 AGENT_RE = re.compile(r"\bagent-[a-z0-9]{20,}\b")
 PROJ_RE = re.compile(r"\bproj-[a-z0-9]{20,}\b")
 SUMMARY_RE = re.compile(r"# summary: created=(\d+) merged=(\d+) skipped=(\d+)")
@@ -143,6 +156,15 @@ def sh(argv: list[str], cwd=None, timeout: float = 120, env=None) -> tuple[int, 
     except subprocess.TimeoutExpired as e:
         out, err = (x.decode(errors="replace") if isinstance(x, bytes) else (x or "") for x in (e.stdout, e.stderr))
         return 124, out, err + f"\ntimeout after {timeout:.0f}s"
+
+
+def scratch_name(run_id: str) -> str:
+    """The run's own marketplace name: lower-case letters, digits and '-', prefixed 'smv-', never the guard name."""
+    body = re.sub(r"[^a-z0-9-]+", "-", run_id.lower()).strip("-")
+    name = (body if body.startswith(SCRATCH_PREFIX) else SCRATCH_PREFIX + body)[:64].rstrip("-")
+    if not SCRATCH_NAME_RE.fullmatch(name) or name == GUARD_MARKETPLACE:
+        die(f"cannot derive a scratch marketplace name from run id {run_id!r}")
+    return name
 
 
 def jload(text: str, default=None):
@@ -258,6 +280,23 @@ class Run:
     @property
     def project(self) -> str | None:
         return self.data["created"]["project"]
+
+    # the scratch marketplace (never GUARD_MARKETPLACE): its name, the plugin id under it, the export it serves
+    @property
+    def mkt_name(self) -> str:
+        return (self.data.get("marketplace") or {}).get("name") or scratch_name(self.data["run_id"])
+
+    @property
+    def plugin_id(self) -> str:
+        return f"{PLUGIN_NAME}@{self.mkt_name}"
+
+    @property
+    def install_line(self) -> str:
+        return f"/plugin install {self.plugin_id}"
+
+    @property
+    def mkt_src(self) -> Path:
+        return self.root / "mkt-src"
 
     # projmux views of this run's project only
     def project_json(self) -> dict:
@@ -517,7 +556,7 @@ def stop_message(run: Run, agent: str, state: str, text: str) -> int:
         "permission": "STOP (11): a permission prompt is showing. Never answer it. Show the operator the capture "
                       "below and ask; after they answer, resume.",
         "scope-menu": "STOP (12): the plugin scope menu is showing. Right after smv send --text "
-                      f"'{INSTALL_LINE}', resume with scope-pick (it presses Enter only on a verified highlight). "
+                      f"'{run.install_line}', resume with scope-pick (it presses Enter only on a verified highlight). "
                       "At any other time, or when scope-pick itself exits 12, stop and ask the operator.",
         "dialog": "STOP (13): a dialog or question menu this run did not script is showing. Ask the operator; "
                   "after they answer, resume.",
@@ -714,8 +753,8 @@ def user_state(run: Run) -> dict:
     plugin_rows = sorted([str(p.get("id")), str(p.get("scope")), kd(key, p),
                           p.get("scope") in ("project", "local") and same_path(p.get("projectPath"), run.proj)]
                          for p in listing(["claude", "plugin", "list", "--json"], run.ev))
-    mkts = sorted([str(m.get("name")), kd(key, m)]
-                  for m in listing(["claude", "plugin", "marketplace", "list", "--json"], run.ev))
+    mrows = listing(["claude", "plugin", "marketplace", "list", "--json"], run.ev)
+    mkts = sorted([str(m.get("name")), kd(key, m)] for m in mrows)
     cfg = claude_config_dir()
     slack = None
     if SLACK_DEFAULT_STATE.is_dir():  # name, type and content of every entry, all as one keyed digest
@@ -726,8 +765,36 @@ def user_state(run: Run) -> dict:
                          sha256_file(p) if kind == "file" else (os.readlink(p) if kind == "link" else None)])
         slack = {"entries": len(rows), "contents": kd(key, rows)}
     return {"taken": now_iso(), "keyed": key is not None, "plugin_rows": plugin_rows, "marketplaces": mkts,
+            "guard_source": source_of(next((m for m in mrows if m.get("name") == GUARD_MARKETPLACE), None)),
+            "installed_scopes": installed_scopes(cfg / USER_REGISTRY[1], key),
             "files": {rel: config_file_digest(cfg / rel, key) for rel in (USER_SETTINGS, *USER_REGISTRY)},
             "slack_default_state": slack, "lead_tree": lead_tree(run.repo)}
+
+
+def installed_scopes(path: Path, key: bytes | None) -> dict[str, list[list[str]]]:
+    """installed_plugins.json read in memory: per plugin id, each install entry's scope and a keyed digest of the
+    entry. Ids and scope names only (the same fields `claude plugin list` rows already keep), never a value."""
+    data = jload(path.read_text(errors="replace")) if path.is_file() else None
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    return {pid: sorted([str(x.get("scope")), kd(key, x)] for x in rows if isinstance(x, dict))
+            for pid, rows in (plugins or {}).items() if isinstance(rows, list)}
+
+
+def source_of(row: dict | None) -> dict | None:
+    """A marketplace list row's SOURCE only: its type in clear, and the locator (repo, path or url) as a sha256, so
+    two snapshots compare equal or not without the evidence holding the value. None: no such entry."""
+    if not isinstance(row, dict):
+        return None
+    loc = {k: row.get(k) for k in ("source", "repo", "path", "url")}
+    return {"type": str(row.get("source")),
+            "locator_sha256": hashlib.sha256(json.dumps(loc, sort_keys=True).encode()).hexdigest()}
+
+
+def guard_checks(base: dict | None, now: dict | None, label: str) -> list[tuple[str, bool, str]]:
+    """The user-level GUARD_MARKETPLACE entry: same source (type + locator digest) as at the baseline."""
+    show = lambda g: "absent" if g is None else f"{g['type']} locator {g['locator_sha256'][:12]}"  # noqa: E731
+    return [(f"user marketplace '{GUARD_MARKETPLACE}' source unchanged ({label})", base == now,
+             f"{show(base)} -> {show(now)}")]
 
 
 def write_snapshot(run: Run, label: str) -> dict:
@@ -736,11 +803,16 @@ def write_snapshot(run: Run, label: str) -> dict:
     return snap
 
 
-def compare(base: dict, now: dict, phase: str) -> tuple[list[str], list[str]]:
-    """(fails, notes). No flag excuses a fail: user settings, other plugin rows, the marketplace registry rows,
-    the default Slack state dir and the lead tree must equal the baseline. phase 'doctor' tolerates this run's
-    own install row and a registry entry this run added; phase 'cleanup' requires both gone."""
+def compare(base: dict, now: dict, phase: str, owned: tuple[str, str], declared: bool = False
+            ) -> tuple[list[str], list[str]]:
+    """(fails, notes). No flag excuses a fail: user settings, other plugin rows, the marketplace registry rows
+    (the guard entry's source above all), the default Slack state dir and the lead tree must equal the baseline.
+    `owned` is (scratch marketplace name, plugin id): phase 'doctor' tolerates this run's own install row and its
+    scratch registry entry (`declared`: mkt-project declared it, so its name must be in the registry); phase
+    'cleanup' requires both gone."""
     fails, notes = [], []
+    mkt, pid = owned
+    run_owned = {USER_REGISTRY[0]: (mkt, None), USER_REGISTRY[1]: ("plugins", pid)}
     keyed = bool(base.get("keyed") and now.get("keyed"))
     bs, ns = base["files"][USER_SETTINGS], now["files"][USER_SETTINGS]
     if bs["sha256"] != ns["sha256"]:
@@ -751,10 +823,30 @@ def compare(base: dict, now: dict, phase: str) -> tuple[list[str], list[str]]:
         b, n = base["files"][rel], now["files"][rel]
         if b["sha256"] != n["sha256"]:
             rows = changed_key_paths(b, n) if keyed else []
-            own = RUN_OWNED[rel]
+            own = run_owned[rel]
             mine = [key_path(r) for r in rows if r[1] == own[0] and own[1] in (None, r[2])]
             other = [key_path(r) for r in rows if key_path(r) not in mine]
-            notes.append(f"user {rel} changed: run-owned key paths {mine or '-'}; other key paths {other or '-'}")
+            notes.append(f"user {rel} changed (sha256 {str(b['sha256'])[:12]} -> {str(n['sha256'])[:12]}, info): "
+                         f"run-owned key paths {mine or '-'}; other key paths {other or '-'}")
+            if rel == USER_REGISTRY[1]:  # installed_plugins.json: every changed key path must name @<scratch>
+                foreign = [key_path(r) for r in rows if not (r[1] == "plugins" and str(r[2]).endswith(f"@{mkt}"))]
+                if not keyed:
+                    fails.append(f"user {rel} changed and its key paths cannot be named (no digest key)")
+                elif foreign:
+                    fails.append(f"user {rel}: changed key paths that do not name '@{mkt}': {foreign}")
+    user_b, user_n = ({(pid, d) for pid, rows in (x.get("installed_scopes") or {}).items() for sc, d in rows
+                       if sc == "user"} for x in (base, now))
+    if user_b != user_n:  # a user-scope install entry appeared, disappeared or changed: never this run's doing
+        fails.append(f"user {USER_REGISTRY[1]}: user-scope entries changed for "
+                     f"{sorted({pid for pid, _ in user_b ^ user_n})}")
+    # known_marketplaces.json: whole-file equality is no oracle (auto-refresh rewrites lastUpdated). Compared: the
+    # set of marketplace names (== baseline, plus exactly the scratch name while it is declared) and the guard
+    # entry's source (below). Key names only.
+    nb, nn = (set(x["files"][USER_REGISTRY[0]]["keys"]) for x in (base, now))
+    want = nb | {mkt} if declared and phase == "doctor" else nb
+    if nn != want:
+        fails.append(f"user {USER_REGISTRY[0]} marketplace names: +{sorted(nn - want)} -{sorted(want - nn)} "
+                     f"(want the baseline{' plus ' + mkt if want != nb else ''})")
     bo = Counter(tuple(r[:3]) for r in base["plugin_rows"] if not r[3])
     no = Counter(tuple(r[:3]) for r in now["plugin_rows"] if not r[3])
     fails += [f"plugin row MISSING or CHANGED: {r[0]} ({r[1]} scope)" for r in sorted(bo - no)]
@@ -768,11 +860,17 @@ def compare(base: dict, now: dict, phase: str) -> tuple[list[str], list[str]]:
     for name in sorted(set(bm) | set(nm)):
         if bm.get(name) == nm.get(name):
             continue
-        if phase == "doctor" and name == MARKETPLACE and name not in bm:
+        if phase == "doctor" and name == mkt and name != GUARD_MARKETPLACE and name not in bm:
             notes.append(f"marketplace registry entry '{name}' added by this run's project-scope declaration")
             continue
         state = "MISSING" if name not in nm else ("ADDED" if name not in bm else "CHANGED")
         fails.append(f"marketplace registry row {state}: {name}")
+    if base.get("guard_source", "unset") != now.get("guard_source", "unset"):
+        fails.append(f"user marketplace '{GUARD_MARKETPLACE}' source changed: "
+                     f"{guard_checks(base.get('guard_source'), now.get('guard_source'), phase)[0][2]}")
+    reg_b, reg_n = (s["files"][USER_REGISTRY[0]]["sub"].get(GUARD_MARKETPLACE) or {} for s in (base, now))
+    if keyed and reg_b.get("source") != reg_n.get("source"):
+        fails.append(f"user registry key path {GUARD_MARKETPLACE}.source changed ({USER_REGISTRY[0]})")
     if base["slack_default_state"] != now["slack_default_state"]:
         b, n = base["slack_default_state"] or {}, now["slack_default_state"] or {}
         fails.append(f"default Slack state dir changed (names, types or contents): entries {b.get('entries', 'none')}"
@@ -792,7 +890,8 @@ def tree_digest(root: Path) -> dict[str, str]:
     out = {}
     for top in SHIPPED:
         base = root / top
-        for p in sorted(base.rglob("*")) if base.is_dir() else []:
+        found = [base] if base.is_file() else sorted(base.rglob("*")) if base.is_dir() else []
+        for p in found:
             if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
                 out[p.relative_to(root).as_posix()] = sha256_file(p)
     return out
@@ -809,33 +908,48 @@ def plugin_rows_step(run: Run, label: str, rows: list[dict], code: int) -> None:
 
 
 def plugin_checks(run: Run) -> list[tuple[str, bool, str]]:
+    """The project-scope install of the run's scratch-named plugin, compared with the commit export it was installed
+    from (`mkt-project`), never with the working tree."""
+    pid, mkt = run.plugin_id, run.data.get("marketplace") or {}
     code, out, err = sh(["claude", "plugin", "list", "--json"], cwd=run.proj)
     rows = jload(out, []) if code == 0 else []
     plugin_rows_step(run, "plugin-list", rows if isinstance(rows, list) else [], code)
-    entries = [p for p in (rows if isinstance(rows, list) else []) if p.get("id") == PLUGIN_ID]
+    entries = [p for p in (rows if isinstance(rows, list) else []) if p.get("id") == pid]
     mine = [p for p in entries if p.get("scope") == "project" and same_path(p.get("projectPath"), run.proj)]
     local = [p for p in entries if p.get("scope") == "local" and same_path(p.get("projectPath"), run.proj)]
-    want = json.loads((run.repo / ".claude-plugin/plugin.json").read_text())["version"]
-    checks = [("plugin list --json", code == 0, err.strip()[:120] or "ok"),
-              ("project-scope install for this scratch project", len(mine) == 1, f"{len(mine)} entr(y/ies)"),
+    src = run.mkt_src
+    exported = mkt.get("mode") == "scratch-export" and mkt.get("export_ok") and src.is_dir()
+    checks = [("scratch marketplace export recorded and verified (mkt-project)", bool(exported),
+               f"{mkt.get('name')} at commit {str(mkt.get('commit'))[:12]}" if exported else "run smv mkt-project"),
+              ("plugin list --json", code == 0, err.strip()[:120] or "ok"),
+              (f"project-scope install of {pid} for this scratch project", len(mine) == 1, f"{len(mine)} entr(y/ies)"),
               ("no local-scope install for this scratch project", not local, f"{len(local)} entr(y/ies)")]
-    if len(mine) == 1:
+    if exported:
+        now = tree_digest(src)
+        checks.append(("export unchanged since mkt-project (shipped dirs)", digest_of(now) == mkt.get("shipped_sha256"),
+                       f"{len(now)} files"))
+    if len(mine) == 1 and exported:
         p = mine[0]
-        checks.append(("installed version == checkout plugin.json", p.get("version") == want,
-                       f"installed {p.get('version')} vs checkout {want}"))
+        want = json.loads((src / ".claude-plugin/plugin.json").read_text())["version"]
+        checks.append(("installed version == export plugin.json", p.get("version") == want,
+                       f"installed {p.get('version')} vs export {want}"))
         checks.append(("enabled", bool(p.get("enabled")), str(p.get("enabled"))))
         if p.get("installPath") and Path(p["installPath"]).is_dir():
-            installed, checkout = tree_digest(Path(p["installPath"])), tree_digest(run.repo)
-            drift = sorted(k for k in set(installed) | set(checkout) if installed.get(k) != checkout.get(k))
-            checks.append(("installed copy == checkout (shipped dirs)", not drift,
-                           f"{len(drift)} differing: {drift[:8]}" if drift else f"{len(checkout)} files identical"))
+            installed, export = tree_digest(Path(p["installPath"])), tree_digest(src)
+            drift = sorted(k for k in set(installed) | set(export) if installed.get(k) != export.get(k))
+            checks.append(("installed copy == commit export (shipped dirs)", not drift,
+                           f"{len(drift)} differing: {drift[:8]}" if drift else f"{len(export)} files identical"))
         else:
-            checks.append(("installed copy == checkout (shipped dirs)", False, "no installPath on disk"))
+            checks.append(("installed copy == commit export (shipped dirs)", False, "no installPath on disk"))
     settings = run.proj / ".claude/settings.json"
     enabled = ((jload(settings.read_text(), {}) if settings.is_file() else {}).get("enabledPlugins") or {})
-    checks.append(("scratch .claude/settings.json enables the plugin", enabled.get(PLUGIN_ID) is True,
-                   str(enabled.get(PLUGIN_ID))))
+    checks.append(("scratch .claude/settings.json enables the plugin", enabled.get(pid) is True,
+                   f"{pid}: {enabled.get(pid)}"))
     return checks
+
+
+def digest_of(tree: dict[str, str]) -> str:
+    return hashlib.sha256("".join(f"{h}  {k}\n" for k, h in sorted(tree.items())).encode()).hexdigest()
 
 
 def print_checks(title: str, checks: list[tuple[str, bool, str]], run: Run | None = None) -> int:
@@ -1183,9 +1297,9 @@ def launch_steps(a) -> int:
     code, out, err, cap = step("start-project", ["projmux", "start", "project", f"uid:{uid}", "-o", "receipt"], 120)
     if code != 0:
         return launch_failed(run, "projmux start project", code, out, err, cap)
-    code, out, err, cap = step("create-claude", ["projmux", "create", "claude", "--host", "tmux", "--project",
-                                                 f"uid:{uid}", "--cwd", str(run.proj), "--name", "pm",
-                                                 "--label", f"smv-run={run_id}", "-o", "uid"], 240)
+    if a.pm_role:
+        run.update(lambda d: d.__setitem__("pm_role", True))
+    code, out, err, cap = step("create-claude", pm_create_argv(uid, run.proj, run_id, a.pm_role), 240)
     pm = next(iter(AGENT_RE.findall(out)), None)
     if pm:  # never guess the PM from the project's agent list: only a uid projmux printed counts
         run.update(lambda d: (d["created"]["agents"].append(pm), d.__setitem__("pm", pm)))
@@ -1207,6 +1321,13 @@ def launch_steps(a) -> int:
     elif rc not in (0, 10):
         print("launch: FAIL. Keep the output; run: smv cleanup")
     return rc
+
+
+def pm_create_argv(project: str, proj: Path, run_id: str, pm_role: bool) -> list[str]:
+    """The PM pane. --pm-role adds the projmux label role=pm: the mesh MCP tools refuse every pm verb to a PM pane
+    without it (D82)."""
+    return ["projmux", "create", "claude", "--host", "tmux", "--project", f"uid:{project}", "--cwd", str(proj),
+            "--name", "pm", "--label", f"smv-run={run_id}", *(["--label", "role=pm"] if pm_role else []), "-o", "uid"]
 
 
 def preflight() -> list[tuple[str, bool, str]]:
@@ -1267,9 +1388,15 @@ def isolation_checks(run: Run, label: str, phase: str) -> list[tuple[str, bool, 
     base_p = run.ev / "snapshots/baseline.json"
     if not base_p.is_file():
         return [("isolation", False, "isolation not checked: no baseline snapshot (launch stopped before it)")]
-    fails, notes = compare(json.loads(base_p.read_text()), write_snapshot(run, label), phase)
-    out = [("user config, plugin rows, registry, Slack default state, lead tree == baseline", not fails,
-            "unchanged" if not fails else f"{len(fails)} difference(s), listed below")]
+    base, now = json.loads(base_p.read_text()), write_snapshot(run, label)
+    rec = run.data.get("marketplace") or {}
+    fails, notes = compare(base, now, phase, (run.mkt_name, run.plugin_id),
+                           bool(rec.get("mode") == "scratch-export" and rec.get("declared")))
+    out = guard_checks(base.get("guard_source"), now.get("guard_source"), f"{phase} vs baseline")
+    if rec.get("mode") == "scratch-export":  # the source mkt-project recorded right before its add
+        out += guard_checks(rec.get("guard"), now.get("guard_source"), f"{phase} vs mkt-project")
+    out += [("user config, plugin rows, registry, Slack default state, lead tree == baseline", not fails,
+             "unchanged" if not fails else f"{len(fails)} difference(s), listed below")]
     out += [("isolation", False, f) for f in fails]
     out += [("isolation (info)", True, n) for n in notes]
     return out
@@ -1626,18 +1753,20 @@ def cmd_init_check(a) -> int:
 
 
 def scaffold_paths(run: Run, transcript: Path) -> str:
-    """Which scaffold.py the PM's tool calls ran since the last send: this checkout, the installed copy, or other.
-    With a directory marketplace the skill may run the checkout's file; plugin-check proves byte identity only."""
+    """Which scaffold.py the PM's tool calls ran since the last send: the commit export the scratch marketplace
+    serves, the installed copy, this checkout, or other. With a directory marketplace the skill may run the
+    source's file; plugin-check proves byte identity only."""
     code, out, _ = sh(["claude", "plugin", "list", "--json"], cwd=run.proj)
     rows = jload(out, []) if code == 0 else []
     install = next((r.get("installPath") for r in (rows if isinstance(rows, list) else [])
-                    if r.get("id") == PLUGIN_ID and r.get("scope") == "project"
+                    if r.get("id") == run.plugin_id and r.get("scope") == "project"
                     and same_path(r.get("projectPath"), run.proj)), None)
     seen: dict[str, int] = {}
     for _, inp in transcript_texts(transcript, since_mark(run, True), tool_inputs=True):
         for raw in SCAFFOLD_RE.findall(inp):
             p = Path(os.path.expandvars(raw.replace("${CLAUDE_PLUGIN_ROOT}", "$CLAUDE_PLUGIN_ROOT")))
-            where = ("checkout" if p.is_absolute() and within(p, run.repo) else
+            where = ("commit export" if p.is_absolute() and within(p, run.mkt_src) else
+                     "checkout" if p.is_absolute() and within(p, run.repo) else
                      "installed copy" if install and p.is_absolute() and within(p, Path(install)) else
                      "plugin root variable" if "CLAUDE_PLUGIN_ROOT" in raw else f"other ({home_rel(raw)})")
             if install and same_path(install, run.repo) and where == "checkout":
@@ -1738,54 +1867,187 @@ def cmd_seed(a) -> int:
     return 0
 
 
+def json_diff(a, b, path: str = "") -> list[str]:
+    """Key paths where two JSON values differ (`plugins[0].name`); never a value."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return [x for k in sorted(set(a) | set(b), key=str)
+                for x in (json_diff(a.get(k), b.get(k), f"{path}.{k}" if path else str(k)) if k in a and k in b
+                          else [f"{path}.{k}" if path else str(k)])]
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        return [x for i, (u, v) in enumerate(zip(a, b)) for x in json_diff(u, v, f"{path}[{i}]")]
+    return [] if a == b and type(a) is type(b) else [path or "(root)"]
+
+
+def git_blob_id(data: bytes, algo: str) -> str:
+    return hashlib.new(algo, b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def commit_tree(repo: Path, sha: str) -> tuple[str, dict[str, tuple[str, str, str]]]:
+    """(object format, {path: (mode, type, object id)}) of every entry of the commit, read with git ls-tree -z."""
+    code, fmt, err = sh(["git", "-C", str(repo), "rev-parse", "--show-object-format"])
+    algo = fmt.strip() if code == 0 and fmt.strip() in ("sha1", "sha256") else "sha1"
+    code, out, err = sh(["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", sha])
+    if code != 0:
+        die(f"git ls-tree {sha[:12]} failed (exit {code}): {err.strip()[:160]}", 1)
+    tree = {}
+    for rec in filter(None, out.split("\0")):
+        meta, path = rec.split("\t", 1)
+        mode, kind, oid = meta.split()
+        tree[path] = (mode, kind, oid)
+    return algo, tree
+
+
+def export_checks(run: Run, sha: str, dest: Path, name: str) -> list[tuple[str, bool, str]]:
+    """The export equals the commit, except that the marketplace manifest's `name` is the scratch name: every other
+    file's git blob id equals the commit's, no file is missing or extra, and the manifest's JSON differs at the key
+    path `name` only. Evidence: export/tree.txt (object id, verdict, path) and export/manifest-keypaths.txt."""
+    algo, tree = commit_tree(run.repo, sha)
+    on_disk = {p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file() or p.is_symlink()}
+    rows, missing, differ, subs = [], [], [], []
+    for path, (mode, kind, oid) in sorted(tree.items()):
+        f = dest / path
+        if kind == "commit":
+            subs.append(path)
+            rows.append(f"{oid}  submodule  {path}")
+            continue
+        if path == MKT_MANIFEST:
+            rows.append(f"{oid}  manifest   {path}")
+            continue
+        data = (os.readlink(f).encode() if f.is_symlink() else None) if mode == "120000" else (
+            f.read_bytes() if f.is_file() and not f.is_symlink() else None)
+        verdict = "missing" if data is None else ("same" if git_blob_id(data, algo) == oid else "DIFFERS")
+        (missing if data is None else differ if verdict == "DIFFERS" else []).append(path)
+        rows.append(f"{oid}  {verdict:<9}  {path}")
+    extra = sorted(on_disk - {p for p, (_, k, _) in tree.items() if k != "commit"})
+    want = jload(sh(["git", "-C", str(run.repo), "cat-file", "blob", tree.get(MKT_MANIFEST, ("", "", "-"))[2]])[1])
+    got = jload((dest / MKT_MANIFEST).read_text()) if (dest / MKT_MANIFEST).is_file() else None
+    diff = json_diff(want, got) if isinstance(want, dict) and isinstance(got, dict) else ["(manifest unreadable)"]
+    plugins = [x.get("name") for x in (want or {}).get("plugins", []) if isinstance(x, dict)] if want else []
+    edir = run.ev / "export"
+    edir.mkdir(exist_ok=True)
+    (edir / "tree.txt").write_text(f"# commit {sha}  object format {algo}  entries {len(tree)}\n"
+                                   + "".join(f"{r}\n" for r in rows) + "".join(f"-  EXTRA  {x}\n" for x in extra))
+    (edir / "manifest-keypaths.txt").write_text(f"# {MKT_MANIFEST}: key paths where the export differs from the "
+                                                f"commit (no values)\n" + "".join(f"{x}\n" for x in diff))
+    files = len(tree) - len(subs) - 1
+    return [("export file set == commit tree", not missing and not extra,
+             f"{files} files + manifest; missing {missing[:5]}; extra {extra[:5]}"),
+            ("every exported file except the manifest == its commit blob", not differ,
+             f"{files - len(differ) - len(missing)} same; differing {differ[:5]}"),
+            (f"{MKT_MANIFEST} differs from the commit at key path 'name' only", diff == ["name"], str(diff[:6])),
+            (f"{MKT_MANIFEST} name is the scratch name", (got or {}).get("name") == name, name),
+            (f"the commit's marketplace lists the plugin '{PLUGIN_NAME}'", PLUGIN_NAME in plugins, str(plugins)),
+            ("no submodule in the commit (an archive leaves it empty)", not subs, str(subs[:5]))]
+
+
+def make_export(run: Run, sha: str, dest: Path, name: str) -> bool:
+    """git archive <commit> | tar -x into <run>/mkt-src (two captured steps through a tar file next to it, removed
+    after), then the one edit: the manifest's `name`. A previous attempt's export of the same commit is reused."""
+    if not dest.is_dir():
+        tar = run.root / "mkt-src.tar"
+        code = run.cmd("export-archive", ["git", "-C", str(run.repo), "archive", "--format=tar", "-o", str(tar),
+                                          sha], timeout=120)[0]
+        if code == 0:
+            dest.mkdir()
+            code = run.cmd("export-extract", ["tar", "-x", "-f", str(tar), "-C", str(dest)], timeout=120)[0]
+        tar.unlink(missing_ok=True)
+        if code != 0:
+            return False
+    manifest = dest / MKT_MANIFEST
+    data = jload(manifest.read_text()) if manifest.is_file() else None
+    if not isinstance(data, dict):
+        return False
+    if data.get("name") != name:
+        data["name"] = name
+        manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return True
+
+
 def cmd_mkt_project(a) -> int:
-    """Declare the marketplace in the scratch project with the CLI. The slash '/plugin marketplace add' is never
-    used: it writes the declaration to user settings. Stops (21) when another 'supervisor-mesh' is registered."""
+    """Declare a SCRATCH-NAMED marketplace in the scratch project with the CLI: an export of the commit under test
+    whose manifest name is the run's own (smv-...), so the user-level GUARD_MARKETPLACE registry entry is never
+    rewritten. The slash '/plugin marketplace add' is never used (it writes user settings). Stops (21) when the
+    scratch name is already registered or declared at user scope by anything but this run."""
     run = Run.load(a.run)
+    name = run.mkt_name
+    if name == GUARD_MARKETPLACE or not SCRATCH_NAME_RE.fullmatch(name):
+        die(f"refused: '{name}' is not a scratch marketplace name", 2)
+    if a.commit.startswith("-"):
+        die("--commit must be a commit-ish, not an option", 2)
     code, out, err = sh(["claude", "plugin", "marketplace", "list", "--json"], cwd=run.ev)
     if code != 0 or not isinstance(jload(out), list):
         die(f"claude plugin marketplace list --json failed (exit {code}): {err.strip()[:200]}", 1)
-    known = next((m for m in jload(out) if m.get("name") == MARKETPLACE), None)
+    rows = [m for m in jload(out) if isinstance(m, dict)]
+    guard = source_of(next((m for m in rows if m.get("name") == GUARD_MARKETPLACE), None))
+    known = next((m for m in rows if m.get("name") == name), None)
     settings_file = claude_config_dir() / USER_SETTINGS  # read in memory only: never copied, no value printed
     decl = ((jload(settings_file.read_text(), {}) if settings_file.is_file() else {})
-            .get("extraKnownMarketplaces") or {}).get(MARKETPLACE)
-    src = (decl or {}).get("source") or {}
-    same_known = bool(known) and known.get("source") == "directory" and same_path(known.get("path"), run.repo)
-    same_decl = src.get("source") == "directory" and same_path(src.get("path"), run.repo)
-    print(f"registry entry '{MARKETPLACE}': {'none' if not known else ('this checkout' if same_known else 'OTHER')}")
-    print(f"user settings declaration: {'none' if not decl else ('this checkout' if same_decl else 'OTHER')}")
-    if (known and not same_known) or (decl and not same_decl):
-        print(f"STOP (21): a '{MARKETPLACE}' marketplace already points elsewhere; declaring this checkout would "
-              "shadow it. Ask the operator. smv changes nothing.")
+            .get("extraKnownMarketplaces") or {}).get(name)
+    rec = run.data.get("marketplace") or {}
+    ours = rec.get("mode") == "scratch-export" and rec.get("name") == name
+    mine = bool(known) and ours and known.get("source") == "directory" and same_path(known.get("path"), run.mkt_src)
+    print(f"user marketplace '{GUARD_MARKETPLACE}': "
+          f"{guard['type'] + ' source (left untouched)' if guard else 'none'}")
+    print(f"scratch marketplace '{name}': registry {'none' if not known else ('this run' if mine else 'OTHER')}, "
+          f"user settings {'none' if not decl else 'DECLARED'}")
+    if (known and not mine) or decl:
+        print(f"STOP (21): the scratch marketplace name '{name}' is already registered or declared at user scope "
+              "by something other than this run. Ask the operator. smv changes nothing.")
         return 21
+    code, out, _ = run.cmd("commit-under-test", ["git", "-C", str(run.repo), "rev-parse", "--verify", "--quiet",
+                                                 "--end-of-options", f"{a.commit}^{{commit}}"])
+    sha = out.strip()
+    if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        die(f"--commit {a.commit!r} does not name a commit in the checkout", 2)
+    if ours and rec.get("commit") != sha:
+        die(f"this run already exported commit {str(rec.get('commit'))[:12]}; one commit per run (launch a new one)",
+            2)
+
     def claim(d: dict) -> bool:
-        if d.get("marketplace") is not None:
+        if (d.get("marketplace") or {}).get("mode") == "scratch-export":
             return False
-        d["marketplace"] = {"mode": "project-cli", "declared": False, "registry_preexisting": bool(known),
-                            "at": now_iso()}
+        d["marketplace"] = {"mode": "scratch-export", "name": name, "plugin_id": f"{PLUGIN_NAME}@{name}",
+                            "commit": sha, "src": str(run.mkt_src), "guard": guard, "registry_preexisting": False,
+                            "export_ok": False, "declared": False, "at": now_iso()}
         return True
 
     first = run.update(claim)
-    pre = run.data["marketplace"]["registry_preexisting"]  # recorded once, before the first add; a retry keeps it
+    exported = make_export(run, sha, run.mkt_src, name)
+    echecks = export_checks(run, sha, run.mkt_src, name) if exported else [
+        ("git archive | tar -x of the commit, manifest renamed", False, "see the export-* step files")]
+    export_ok = all(c[1] for c in echecks)
+    shipped = digest_of(tree_digest(run.mkt_src)) if export_ok else None
+    run.update(lambda d: d["marketplace"].update(export_ok=export_ok, shipped_sha256=shipped))
+    if not export_ok:
+        return print_checks("mkt-project", echecks, run)
     before = config_file_digest(settings_file, None)["sha256"]
-    code, _, _ = run.cmd("marketplace-add-project", ["claude", "plugin", "marketplace", "add", str(run.repo),
+    code, _, _ = run.cmd("marketplace-add-project", ["claude", "plugin", "marketplace", "add", str(run.mkt_src),
                                                      "--scope", "project", "--json"], cwd=run.proj, timeout=300)
     settings = run.proj / ".claude/settings.json"
     scratch_decl = (jload(settings.read_text(), {}) if settings.is_file() else {}).get("extraKnownMarketplaces") or {}
     user_same = config_file_digest(settings_file, None)["sha256"] == before
     lc, lo, _ = sh(["claude", "plugin", "marketplace", "list", "--json"], cwd=run.proj)
-    entry = next((m for m in (jload(lo, []) if lc == 0 else []) or [] if m.get("name") == MARKETPLACE), None)
-    checks = [("claude plugin marketplace add <checkout> --scope project", code == 0, f"exit {code}"),
-              ("scratch .claude/settings.json declares the marketplace", MARKETPLACE in scratch_decl, MARKETPLACE),
-              (f"registry entry '{MARKETPLACE}' is this checkout (directory source)", bool(entry) and
-               entry.get("source") == "directory" and same_path(entry.get("path"), run.repo),
-               "this checkout" if entry else "no entry"),
-              (f"user {USER_SETTINGS} sha256 unchanged by the add", user_same, "whole-file sha256")]
+    after = [m for m in (jload(lo, []) if lc == 0 else []) or [] if isinstance(m, dict)]
+    entry = next((m for m in after if m.get("name") == name), None)
+    guard_now = source_of(next((m for m in after if m.get("name") == GUARD_MARKETPLACE), None))
+    checks = echecks + [
+        ("claude plugin marketplace add <commit export> --scope project", code == 0, f"exit {code}"),
+        ("scratch .claude/settings.json declares the scratch marketplace", name in scratch_decl, name),
+        ("scratch .claude/settings.json does not declare the guard name", GUARD_MARKETPLACE not in scratch_decl,
+         GUARD_MARKETPLACE),
+        (f"registry entry '{name}' is the commit export (directory source)", bool(entry) and
+         entry.get("source") == "directory" and same_path(entry.get("path"), run.mkt_src),
+         "the export" if entry else "no entry"),
+        *guard_checks(guard, guard_now, "before vs after the add"),
+        (f"user {USER_SETTINGS} sha256 unchanged by the add", user_same, "whole-file sha256")]
     ok = all(c[1] for c in checks)
     run.update(lambda d: d["marketplace"].update(declared=ok, at=now_iso()))
-    run.note(f"marketplace declared at project scope with the CLI ({'first' if first else 'repeated'} add; registry "
-             f"entry before this run's first add: {pre}); the slash /plugin marketplace add is not exercised")
-    return print_checks("mkt-project", checks, run)
+    run.note(f"scratch marketplace '{name}' (commit {sha[:12]} exported, manifest name the only change) declared at "
+             f"project scope with the CLI ({'first' if first else 'repeated'} add); '{GUARD_MARKETPLACE}' never "
+             "added, removed or declared; the slash /plugin marketplace add is not exercised")
+    rc = print_checks("mkt-project", checks, run)
+    print(f"PLUGIN_ID={run.plugin_id}\nnext: \"$SMV\" send --text \"{run.install_line}\"")
+    return rc
 
 
 def cmd_scope_pick(a) -> int:
@@ -1794,8 +2056,8 @@ def cmd_scope_pick(a) -> int:
     Anything unexpected stops with 12 and nothing is pressed; Enter is never pressed on an unverified line."""
     run = Run.load(a.run)
     agent = run.resolve_agent(a.agent)
-    if (run.data["sends"].get(agent) or {}).get("text") != INSTALL_LINE:
-        die(f"scope-pick runs only right after: smv send --text '{INSTALL_LINE}'")
+    if (run.data["sends"].get(agent) or {}).get("text") != run.install_line:
+        die(f"scope-pick runs only right after: smv send --text '{run.install_line}'")
     pane = run.pane(agent, wait=30)
     pressed: list[str] = []
 
@@ -2112,8 +2374,17 @@ def has_install_row(run: Run) -> bool | None:
     rows = jload(out) if code == 0 else None
     if not isinstance(rows, list):
         return None
-    return any(p.get("id") == PLUGIN_ID and p.get("scope") == "project" and same_path(p.get("projectPath"), run.proj)
-               for p in rows)
+    return any(p.get("id") == run.plugin_id and p.get("scope") == "project"
+               and same_path(p.get("projectPath"), run.proj) for p in rows)
+
+
+def scratch_registered(run: Run) -> bool | None:
+    """The run's scratch marketplace name is in the registry (None: the listing failed)."""
+    code, out, _ = sh(["claude", "plugin", "marketplace", "list", "--json"], cwd=run.ev)
+    rows = jload(out) if code == 0 else None
+    if not isinstance(rows, list):
+        return None
+    return any(isinstance(m, dict) and m.get("name") == run.mkt_name for m in rows)
 
 
 def leftovers(run: Run) -> list[str]:
@@ -2128,6 +2399,11 @@ def leftovers(run: Run) -> list[str]:
     row = has_install_row(run)
     if row is None or row:
         out.append("project-scope install row" + (" (claude plugin list failed)" if row is None else ""))
+    if (run.data.get("marketplace") or {}).get("mode") == "scratch-export":
+        reg = scratch_registered(run)
+        if reg is None or reg:
+            out.append(f"scratch marketplace registry entry '{run.mkt_name}'"
+                       + (" (claude plugin marketplace list failed)" if reg is None else ""))
     rec = run.data["pids"].get("fake-slack") or {}
     if rec.get("pid") and not rec.get("stopped"):
         out.append(f"FakeSlack pid {rec['pid']}")
@@ -2186,7 +2462,7 @@ def cmd_cleanup(a) -> int:
         for uid in alive:
             record_transcript(run, uid, "cleanup final")
             capture_any(run, uid, f"final-{uid}", "state")
-    uninstall = ["claude", "plugin", "uninstall", PLUGIN_ID, "--scope", "project", "--keep-data"]
+    uninstall = ["claude", "plugin", "uninstall", run.plugin_id, "--scope", "project", "--keep-data"]
     row = has_install_row(run)
     if row is None:
         ok = False
@@ -2202,19 +2478,32 @@ def cmd_cleanup(a) -> int:
     else:
         say("plugin: no project-scope install row for this scratch project")
     mkt = run.data.get("marketplace") or {}
-    remove = ["claude", "plugin", "marketplace", "remove", MARKETPLACE, "--scope", "project", "--json"]
+    name = mkt.get("name")
     scratch_settings = run.proj / ".claude/settings.json"
-    declared_now = MARKETPLACE in ((jload(scratch_settings.read_text(), {}) if scratch_settings.is_file() else {})
-                                   .get("extraKnownMarketplaces") or {})
-    if mkt.get("declared") and mkt.get("registry_preexisting"):
-        say(f"marketplace: the registry entry '{MARKETPLACE}' predates this run; it is left as it was (the project "
-            "declaration goes with the scratch project)")
-    elif not declared_now:
-        say("marketplace: the scratch project declares no marketplace (nothing to remove)")
-    elif dry:
-        say(f"would run in the scratch project: {' '.join(remove)}")
-    else:  # never without --scope: that removes the marketplace from every scope
-        ok &= run.cmd("marketplace-remove-project", remove, cwd=run.proj, timeout=180)[0] == 0
+    declared = ((jload(scratch_settings.read_text(), {}) if scratch_settings.is_file() else {})
+                .get("extraKnownMarketplaces") or {})
+    if mkt.get("mode") != "scratch-export":
+        say("marketplace: this run declared no scratch marketplace (nothing to remove)")
+    elif name == GUARD_MARKETPLACE or not SCRATCH_NAME_RE.fullmatch(str(name)):
+        ok = False  # never: the guard name is never added, so it is never removed either
+        say(f"FAIL: the recorded marketplace name {name!r} is not a scratch name; nothing removed")
+    else:  # the scratch name is always created by this run (mkt-project stops on an existing one): remove it,
+        # at project scope only and by its recorded name (never without --scope: that removes it from every scope)
+        remove = ["claude", "plugin", "marketplace", "remove", name, "--scope", "project", "--json"]
+        if GUARD_MARKETPLACE in declared:
+            ok = False
+            say(f"FAIL: the scratch settings declare '{GUARD_MARKETPLACE}': smv never declares it; nothing removed")
+        elif name not in declared:
+            say(f"marketplace: the scratch project no longer declares '{name}' (nothing to remove at project scope)")
+        elif dry:
+            say(f"would run in the scratch project: {' '.join(remove)}")
+        else:
+            ok &= run.cmd("marketplace-remove-project", remove, cwd=run.proj, timeout=180)[0] == 0
+        if not dry:
+            reg = scratch_registered(run)
+            say(f"{'PASS' if reg is False else 'FAIL'}  scratch marketplace '{name}' gone from the registry: "
+                f"{'gone' if reg is False else 'listing failed' if reg is None else 'still listed'}")
+            ok &= reg is False
     for uid in reversed(recorded):
         if uid not in alive:
             say(f"agent uid:{uid}: not alive (already gone)")
@@ -2290,9 +2579,479 @@ def cmd_cleanup(a) -> int:
     if not a.keep_proj and run.proj.is_dir() and run.proj.parent == run.root:
         shutil.rmtree(run.proj)  # takes the digest key with it
         say(f"removed scratch project {run.proj}")
+    if not a.keep_proj and run.mkt_src.is_dir() and run.mkt_src.parent == run.root:
+        shutil.rmtree(run.mkt_src)  # the commit export: reproducible from the commit; export/tree.txt is evidence
+        say(f"removed commit export {run.mkt_src}")
     run.update(lambda d: d.__setitem__("cleaned", now_iso()))
     say("cleanup: PASS")
     return finish(0)
+
+
+# ---------------------------------------------------------------- the MCP journey (features/mcp.md)
+
+PANE_VAR = "PMX_INTERNAL_ACTIVATION_PANE_UID"  # the pane identity mesh/identity.py reads; presence/equality only
+MCP_NAME_RE = re.compile(r"^mcp__(?P<prefix>.+)__(?P<tool>[a-z][a-z0-9_]*)$")
+TOOL_DEF_RE = re.compile(r'@tool\(\s*"([a-z][a-z0-9_]*)"')
+# tool-call evidence keeps these result fields only (never an item's goal, criteria, notes, messages or paths)
+RESULT_KEYS = ("ok", "error.code", "error.reason", "row", "item_id", "from", "to", "noop", "applied", "plan_id",
+               "stack", "exit_code", "summary.create", "summary.merge", "summary.skip", "identity.kind",
+               "identity.role", "initialized", "launcher", "dispatch.sent", "dispatch.replayed",
+               "dispatch.message_ref", "dispatch.attempts", "written", "changed", "proposal.id", "receipt.id",
+               "receipt.outcome", "receipt.lead_notified")
+INPUT_KEYS = ("item_id", "verb", "apply", "plan_id", "stack", "metrics", "role", "phase", "dry_run", "propose", "only",
+              "event_id", "command", "args.attempt_id", "args.commit", "args.cls")
+MESH_FILES = ("state.json", "config.toml", ".gitignore", "events.jsonl", "refusals.jsonl", "bin/mesh")
+SHAPE_ARGV = (("projmux", "get", "agents"), ("projmux", "get", "panes"), ("projmux", "get", "projects"),
+              ("projmux", "describe", "agent"), ("projmux", "describe", "pane"),
+              ("claude", "plugin", "marketplace", "list"), ("claude", "plugin", "list"))
+
+
+# json-shape presets: the read-only command and the key paths mesh/projmux.py (identity, live members, pane_command)
+# and the marketplace listing are read through. Re-read them against mesh/ at the commit under test (WO-0030).
+SHAPE_PRESETS = {
+    "agents": (["projmux", "get", "agents", "-A", "-o", "json"],
+               ["items[].metadata.uid", "items[].metadata.name", "items[].metadata.labels.role",
+                "items[].spec.workspace.cwd", "items[].status.phase", "items[].status.paneRef"]),
+    "agents-kind": (["projmux", "get", "agents", "-A", "-o", "json"], ["items[].status.interaction.kind"]),
+    "panes": (["projmux", "get", "panes", "-A", "-o", "json"],
+              ["items[].metadata.uid", "items[].status.activation.agentUID", "items[].status.activation.runtimeID",
+               "items[].status.activation.claude.process.pid"]),
+    "marketplaces": (["claude", "plugin", "marketplace", "list", "--json"], ["[].name", "[].source"]),
+}
+
+
+def dig(obj, path: str):
+    for part in path.split("."):
+        obj = obj.get(part) if isinstance(obj, dict) else None
+    return obj
+
+
+def scalar(v) -> str:
+    if isinstance(v, list):
+        return ",".join(scalar(x) for x in v if not isinstance(x, (dict, list)))[:120]
+    return "-" if v is None else str(v)[:80]
+
+
+def mesh_extract(run: Run) -> dict:
+    """The selected fields of the scratch project's `.mesh/` state: file sha256/size, the document's counters, per
+    item its phase, versions, role, history as verb:actor:from->to, attempts (commits shortened, evidence runs as
+    kind/status/exit) and pending sends; event counts by type and operator events by id/seq only; refusals by
+    subject/code. Never an item's goal or criteria, a history note, an argv, a refusal detail or any prompt text."""
+    mesh = run.proj / ".mesh"
+    files = {rel: ({"sha256": sha256_file(mesh / rel), "size": (mesh / rel).stat().st_size,
+                    "executable": os.access(mesh / rel, os.X_OK)} if (mesh / rel).is_file() else None)
+             for rel in MESH_FILES}
+    doc = jload((mesh / "state.json").read_text()) if (mesh / "state.json").is_file() else None
+    out = {"taken": now_iso(), "files": files, "doc": None, "items": {}, "events": {}, "operator_events": [],
+           "refusals": []}
+    if isinstance(doc, dict):
+        out["doc"] = {k: doc.get(k) for k in ("schema_version", "seq", "next_id", "last_operator_seq")}
+        out["doc"].update({f"{k}_count": len(doc.get(k) or {}) for k in ("items", "legacy", "event_uses", "proposals")})
+        for iid, it in sorted((doc.get("items") or {}).items()):
+            c = it.get("contract") or {}
+            out["items"][iid] = {
+                "phase": it.get("phase"), "state": it.get("state"), "blocked_reason": it.get("blocked_reason"),
+                "version": it.get("version"), "contract_version": c.get("version"), "role": c.get("role"),
+                "type": c.get("type"), "depends": c.get("depends"),
+                "history": [f"{h.get('verb') or h.get('row')}:{h.get('actor')}:{h.get('from_phase')}->"
+                            f"{h.get('to_phase')}" for h in it.get("history") or []],
+                "attempts": [{"id": x.get("id"), "base_commit": str(x.get("base_commit"))[:12],
+                              "commit": str(x.get("commit"))[:12], "contract_version": x.get("contract_version"),
+                              "config_hash": str(x.get("config_hash"))[:12],
+                              "evidence": None if not x.get("evidence") else {
+                                  "kind": x["evidence"].get("kind"), "commit": str(x["evidence"].get("commit"))[:12],
+                                  "runs": [f"{r.get('kind')}:{r.get('status')}:{r.get('exit_code')}"
+                                           for r in x["evidence"].get("runs") or []]}}
+                             for x in it.get("attempts") or []],
+                "pending_actions": [{"kind": x.get("kind"), "done": x.get("done"),
+                                     "message_ref": (x.get("payload") or {}).get("message_ref"),
+                                     "attempts": (x.get("payload") or {}).get("attempts")}
+                                    for x in it.get("pending_actions") or []],
+                "failures": [f"{f.get('cls')}:{f.get('reason')}:{f.get('actor')}" for f in it.get("failures") or []]}
+    for rel, key in (("events.jsonl", "events"), ("refusals.jsonl", "refusals")):
+        path = mesh / rel
+        for line in path.read_text(errors="replace").splitlines() if path.is_file() else []:
+            r = jload(line)
+            if not isinstance(r, dict):
+                continue
+            if key == "refusals":
+                out["refusals"].append(f"{r.get('subject')}:{r.get('code')}:{r.get('caller_kind')}:{r.get('item_id')}")
+                continue
+            kind = str(r.get("type"))
+            out["events"][kind] = out["events"].get(kind, 0) + 1
+            if kind == "operator":
+                out["operator_events"].append({"id": r.get("id"), "seq": r.get("seq"),
+                                               "from_pm": r.get("agent_uid") == run.data.get("pm")})
+    return out
+
+
+def cmd_state_check(a) -> int:
+    run = Run.load(a.run)
+    ext = mesh_extract(run)
+    sdir = run.ev / "state"
+    sdir.mkdir(exist_ok=True)
+    (sdir / f"{slug(a.label)}.json").write_text(json.dumps(ext, indent=1))
+    st = ext["files"]["state.json"]
+    checks = [(".mesh/state.json present and a mesh document", bool(st) and ext["doc"] is not None,
+               f"sha256 {st['sha256'][:16]} size {st['size']}" if st else "missing")]
+    item = ext["items"].get(a.item) if a.item else None
+    if a.item:
+        checks.append((f"item {a.item} recorded", item is not None, f"{len(ext['items'])} item(s)"))
+    if item and a.expect_phase:
+        checks.append((f"item {a.item} phase == {a.expect_phase}", item["phase"] == a.expect_phase, item["phase"]))
+    if item and a.expect_verbs:
+        want, got = [v for v in a.expect_verbs.split(",") if v], [h.split(":")[0] for h in item["history"]]
+        it = iter(got)
+        checks.append((f"item {a.item} history holds {want} in order", all(v in it for v in want), str(got)))
+    if item and a.expect_evidence_pass:
+        att = (item["attempts"] or [None])[-1]
+        ev = (att or {}).get("evidence") or {}
+        runs = ev.get("runs") or []
+        checks.append((f"item {a.item} last attempt: evidence at its commit, every run passed", bool(runs)
+                       and all(":pass:" in r.lower() for r in runs) and ev.get("commit") == (att or {}).get("commit"),
+                       f"commit {(att or {}).get('commit')} evidence {ev.get('commit')} runs {runs}"))
+    if a.baseline:
+        base = jload((sdir / f"{slug(a.baseline)}.json").read_text()) if (sdir / f"{slug(a.baseline)}.json").is_file() \
+            else None
+        if base is None:
+            die(f"no state-check {a.baseline} (run: smv state-check --label {a.baseline})")
+        delta = len(ext["operator_events"]) - len(base["operator_events"])
+        typed = sum(1 for line in ((run.ev / "sends.log").read_text().splitlines()
+                                   if (run.ev / "sends.log").is_file() else [])
+                    if line.split("\t")[1:2] == [f"uid:{run.data['pm']}"] and "\tTYPE " in line
+                    and (parse_ts(line.split("\t")[0]) or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
+                    >= (parse_ts(base["taken"]) or dt.datetime.max.replace(tzinfo=dt.timezone.utc)))
+        hook_err = ext["events"].get("hook_error", 0) - base["events"].get("hook_error", 0)
+        checks.append(("operator events since the baseline (info: lines smv typed into the PM pane meanwhile)", True,
+                       f"+{delta} operator, +{hook_err} hook_error, typed {typed}"))
+        if a.expect_operator_delta is not None:
+            checks.append((f"operator events since {a.baseline} == {a.expect_operator_delta}",
+                           delta == a.expect_operator_delta, f"+{delta}"))
+    if a.expect_operator_from_pm:
+        checks.append(("every operator event was recorded from the PM pane", bool(ext["operator_events"]) and all(
+            e["from_pm"] for e in ext["operator_events"]), f"{len(ext['operator_events'])} event(s)"))
+    print(f"state-check {a.label}: items {json.dumps({k: v['phase'] for k, v in ext['items'].items()})} events "
+          f"{ext['events']} refusals {len(ext['refusals'])}; extract: state/{slug(a.label)}.json")
+    return print_checks(f"state-check {a.label}", checks, run)
+
+
+def cmd_mesh_config(a) -> int:
+    """The operator's hand edit of .mesh/config.toml (the D96 deny rules keep the PM's file tools off .mesh/): one
+    `[[verify.commands]]` entry, `test -f <file>`, appended once. The file must exist (mesh_init wrote it)."""
+    run = Run.load(a.run)
+    why = allow_refusal(run, f"ADDED {a.verify_file}")
+    if why:
+        die(f"--verify-file refused: {why}", 2)
+    cfg = run.proj / ".mesh/config.toml"
+    if not cfg.is_file():
+        die("no .mesh/config.toml in the scratch project: apply mesh_init first", 2)
+    text = cfg.read_text()
+    if re.search(r"^\s*\[\[verify\.commands\]\]", text, re.M):
+        die(".mesh/config.toml already has a [[verify.commands]] entry; smv adds exactly one", 2)
+    before = sha256_file(cfg)
+    rel = Path(a.verify_file).as_posix()
+    block = ("\n# added by smv mesh-config: the operator's hand edit (the PM's file tools are denied on .mesh/)\n"
+             f"[[verify.commands]]\nargv = [\"test\", \"-f\", {json.dumps(rel)}]\nkind = \"test\"\n"
+             f"timeout_s = {a.timeout_s}\n")
+    cfg.write_text(text + ("" if text.endswith("\n") else "\n") + block)
+    parsed = "tomllib not available"
+    try:
+        import tomllib
+        cmds = (tomllib.loads(cfg.read_text()).get("verify") or {}).get("commands") or []
+        parsed = f"{len(cmds)} verify command(s), argv {cmds[0].get('argv') if cmds else None}"
+        ok = len(cmds) == 1 and cmds[0].get("argv") == ["test", "-f", rel]
+    except ImportError:
+        ok = True
+    except ValueError as exc:
+        parsed, ok = f"does not parse: {exc}", False
+    run.note(f"mesh-config: .mesh/config.toml {before[:12]} -> {sha256_file(cfg)[:12]} (+ verify: test -f {rel})")
+    return print_checks("mesh-config", [(".mesh/config.toml gains one verify command and parses", ok, parsed)], run)
+
+
+def tool_names(src: Path) -> list[str]:
+    """The tool names the export's mesh/tools.py registers (@tool("name", ...)), read as text: never imported."""
+    p = src / "mesh/tools.py"
+    return TOOL_DEF_RE.findall(p.read_text()) if p.is_file() else []
+
+
+def flat_pick(obj, keys: tuple[str, ...]) -> dict:
+    return {k: scalar(v) for k in keys if (v := dig(obj, k)) is not None}
+
+
+def mcp_calls(path: Path, since: dt.datetime | None) -> list[dict]:
+    """Every supervisor-mesh MCP tool call in a transcript with its result, correlated by tool_use_id: the prefix
+    and tool name, the whitelisted inputs, and the whitelisted fields of the result's JSON (plus the last attempt's
+    id and commit and its evidence runs, from the returned item). No other part of a result is kept."""
+    calls, by_id = [], {}
+    for raw in path.read_text(errors="replace").splitlines():
+        rec = jload(raw)
+        if not isinstance(rec, dict) or rec.get("type") not in ("user", "assistant"):
+            continue
+        ts = rec.get("timestamp") or "-"
+        if since and ((t := parse_ts(rec.get("timestamp"))) is None or t < since):
+            continue
+        content = (rec.get("message") or {}).get("content")
+        for c in (x for x in (content if isinstance(content, list) else []) if isinstance(x, dict)):
+            if rec["type"] == "assistant" and c.get("type") == "tool_use":
+                m = MCP_NAME_RE.match(str(c.get("name")))
+                if m and "supervisor-mesh" in m.group("prefix"):
+                    call = {"ts": ts, "id": c.get("id"), "prefix": f"mcp__{m.group('prefix')}__",
+                            "tool": m.group("tool"), "input": flat_pick(c.get("input") or {}, INPUT_KEYS),
+                            "result": None}
+                    calls.append(call)
+                    by_id[c.get("id")] = call
+            elif rec["type"] == "user" and c.get("type") == "tool_result" and c.get("tool_use_id") in by_id:
+                call = by_id[c["tool_use_id"]]
+                data = next((d for d in (jload(t) for t in texts(c.get("content"))) if isinstance(d, dict)), None)
+                res = flat_pick(data or {}, RESULT_KEYS)
+                atts = dig(data or {}, "item.attempts") or []
+                if atts and isinstance(atts[-1], dict):
+                    res["attempt_id"] = scalar(atts[-1].get("id"))
+                    res["attempt_commit"] = str(atts[-1].get("commit"))[:12]
+                    runs = (atts[-1].get("evidence") or {}).get("runs") or []
+                    if runs:
+                        res["evidence"] = ",".join(f"{r.get('kind')}:{r.get('status')}:{r.get('exit_code')}"
+                                                   for r in runs if isinstance(r, dict))
+                call["result"] = {"is_error": bool(c.get("is_error")) or (data or {}).get("ok") is False,
+                                  "parsed": data is not None, "fields": res}
+    return calls
+
+
+def call_line(c: dict) -> str:
+    r = c["result"]
+    outcome = "no result" if r is None else ("error" if r["is_error"] else "ok") + ("" if r["parsed"] else " (raw)")
+    fields = " ".join(f"{k}={v}" for k, v in (r or {}).get("fields", {}).items())
+    args = " ".join(f"{k}={v}" for k, v in c["input"].items())
+    return f"{c['ts']} {c['tool']} [{c['id']}] args{{{args}}} -> {outcome} {fields}".rstrip()
+
+
+def cmd_mcp_calls(a) -> int:
+    run = Run.load(a.run)
+    agent = run.resolve_agent(a.agent)
+    path = transcript_source(run, agent)
+    if not path:
+        print(f"mcp-calls uid:{agent}: no transcript found")
+        return 1
+    calls = mcp_calls(path, since_mark(run, a.since_last_send))
+    lines = [call_line(c) for c in calls]
+    prefixes = sorted({c["prefix"] for c in calls})
+    checks = [("supervisor-mesh MCP tool calls in the transcript", bool(calls), f"{len(calls)} call(s)"),
+              ("one tool-name prefix for every call (as Claude shows it)", len(prefixes) == 1, str(prefixes))]
+    if a.prefix:
+        checks.append((f"prefix == {a.prefix}", prefixes == [a.prefix], str(prefixes)))
+    for spec in a.expect:
+        tool, _, want = spec.partition("=")
+        want = want or "ok"
+        got = [c for c in calls if c["tool"] == tool and c["result"] is not None
+               and (want == "any" or c["result"]["is_error"] == (want == "error"))]
+        checks.append((f"{tool}: at least one call with a {want} result (correlated by tool_use_id)", bool(got),
+                       f"{len(got)} of {sum(c['tool'] == tool for c in calls)}"))
+    if a.all_tools:
+        names = tool_names(run.mkt_src if run.mkt_src.is_dir() else run.repo)
+        seen = {c["tool"] for c in calls if c["result"] is not None}
+        missing = [t for t in names if t not in seen]
+        checks.append((f"every tool the export registers answered at least once ({len(names)})", bool(names)
+                       and not missing, f"missing {missing}" if missing else ", ".join(names)))
+    kept, dropped = record_transcript(run, agent, "mcp-calls", lines)
+    text = "".join(f"{x}\n" for x in kept) + f"# lines dropped by redaction: {dropped}\n"
+    (run.ev / "steps" / f"{run.next_id('mcp-calls-extract')}.txt").write_text(text)
+    print(text, end="")
+    return print_checks("mcp-calls", checks, run)
+
+
+def cmd_mcp_check(a) -> int:
+    """`/mcp` lists the supervisor-mesh server as connected: read the current screen, press nothing."""
+    run = Run.load(a.run)
+    agent = run.resolve_agent(a.agent)
+    text = run.capture(run.pane(agent, wait=10))
+    rows = mcp_rows(text)
+    path = run.save_pane("mcp-dialog", text, "match", re.compile(r"supervisor-mesh|MCP|[Ss]erver", re.I))
+    checks = [("the screen is the /mcp dialog (no input box)", screen_state(text) != "ready", screen_state(text)),
+              ("a supervisor-mesh line shows connected", any(s == "connected" for _, _, s in rows),
+               f"{[s for _, _, s in rows]}"),
+              ("no supervisor-mesh line shows a failure", not any(s == "failed" for _, _, s in rows),
+               f"capture {path.name}")]
+    return print_checks("mcp-check", checks, run)
+
+
+def proc_children(proc: Path) -> dict[int, list[int]]:
+    kids: dict[int, list[int]] = {}
+    for d in proc.iterdir() if proc.is_dir() else []:
+        if d.name.isdigit():
+            try:
+                ppid = int((d / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            kids.setdefault(ppid, []).append(int(d.name))
+    return kids
+
+
+def proc_argv(proc: Path, pid: int) -> list[str]:
+    try:
+        return [x for x in (proc / str(pid) / "cmdline").read_bytes().decode(errors="replace").split("\0") if x]
+    except OSError:
+        return []
+
+
+def proc_env_digest(proc: Path, pid: int, var: str, key: bytes) -> str | None:
+    """A keyed digest of one variable of a process's environment, or None when it is absent. The environment is
+    read in memory only and never written or printed."""
+    try:
+        raw = (proc / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    for item in raw.split(b"\0"):
+        name, sep, value = item.partition(b"=")
+        if sep and name.decode(errors="replace") == var:
+            return hmac.new(key, value, "sha256").hexdigest()
+    return None
+
+
+def cmd_mcp_env(a) -> int:
+    """Live check (a): the plugin-declared MCP server process under this pane received the pane identity variable,
+    equal to its claude process's and to the pane uid projmux reports. Presence and equality only, through keyed
+    digests in memory; no environment value is ever written. Also where the server's script runs from."""
+    run = Run.load(a.run)
+    agent = run.resolve_agent(a.agent)
+    proc = Path(a.proc_root)
+    tmux_id = run.pane(agent, wait=10)
+    code, out, _ = sh(["tmux", *run.socket_args(), "display-message", "-p", "-t", tmux_id, "#{pane_pid}"])
+    pane_pid = int(out.strip()) if code == 0 and out.strip().isdigit() else None
+    key = os.urandom(32)
+    kids, servers, todo = proc_children(proc), [], [pane_pid] if pane_pid else []
+    parent: dict[int, int] = {}
+    while todo:
+        pid = todo.pop()
+        for k in kids.get(pid, []):
+            parent[k] = pid
+            todo.append(k)
+            argv = proc_argv(proc, k)
+            if any(x.endswith("mesh/mcp_server.py") for x in argv):
+                servers.append(k)
+
+    def claude_of(pid: int) -> int | None:
+        while pid in parent:
+            pid = parent[pid]
+            if any(Path(x).name == "claude" or x.endswith("/claude") for x in proc_argv(proc, pid)[:2]):
+                return pid
+        return None
+
+    pane_uid = (run.data.get("panes", {}).get(agent) or {}).get("pane_uid") or ""
+    want = hmac.new(key, pane_uid.encode(), "sha256").hexdigest()
+    rows = []
+    install = next((r.get("installPath") for r in listing(["claude", "plugin", "list", "--json"], run.proj)
+                    if r.get("id") == run.plugin_id and same_path(r.get("projectPath"), run.proj)), None)
+    for pid in servers:
+        script = next(x for x in proc_argv(proc, pid) if x.endswith("mesh/mcp_server.py"))
+        where = ("installed copy" if install and within(Path(script), Path(install)) else
+                 "commit export" if within(Path(script), run.mkt_src) else
+                 "checkout" if within(Path(script), run.repo) else "other")
+        srv, cl = proc_env_digest(proc, pid, PANE_VAR, key), proc_env_digest(proc, claude_of(pid) or -1, PANE_VAR, key)
+        try:
+            cwd_ok = same_path(os.readlink(proc / str(pid) / "cwd"), run.proj)
+        except OSError:
+            cwd_ok = False
+        row = {"present": srv is not None, "equal_to_claude": srv is not None and srv == cl,
+               "equal_to_pane_uid": srv == want, "cwd_is_project": cwd_ok, "script": where}
+        rows.append(row)
+    checks = [("pane pid resolved", pane_pid is not None, "tmux #{pane_pid}"),
+              ("a mesh/mcp_server.py process under this pane", bool(servers), f"{len(servers)} process(es)")]
+    for n, row in enumerate(rows):
+        checks += [(f"server {n}: {PANE_VAR} present", row["present"], "presence only"),
+                   (f"server {n}: equal to its claude process's", row["equal_to_claude"], "keyed digest, in memory"),
+                   (f"server {n}: equal to the pane uid projmux reports", row["equal_to_pane_uid"], "keyed digest"),
+                   (f"server {n}: cwd is the scratch project", row["cwd_is_project"], "realpath"),
+                   (f"server {n}: script location (info)", True, row["script"])]
+    run.update(lambda d: d.setdefault("mcp_env", {}).__setitem__(agent, rows))
+    return print_checks("mcp-env", checks, run)
+
+
+def key_paths(obj, path: str = "") -> dict[str, set[str]]:
+    """{key path: value types} with list items merged under `[]`; never a value."""
+    out: dict[str, set[str]] = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            for p, t in key_paths(v, f"{path}.{k}" if path else str(k)).items():
+                out.setdefault(p, set()).update(t)
+        out.setdefault(path or "(root)", set()).add("object")
+    elif isinstance(obj, list):
+        for v in obj:
+            for p, t in key_paths(v, f"{path}[]").items():
+                out.setdefault(p, set()).update(t)
+        out.setdefault(path or "(root)", set()).add("array")
+    else:
+        out[path or "(root)"] = {type(obj).__name__}
+    return out
+
+
+def cmd_json_shape(a) -> int:
+    """Live checks (b) and (d): run one listed read-only JSON command and keep its key paths and value types only,
+    then require each --expect path. Values never reach the evidence."""
+    run = Run.load(a.run)
+    argv = [x for x in a.argv if x != "--"]
+    if a.preset:
+        if argv:
+            die("json-shape: --preset takes no command", 2)
+        argv, preset = SHAPE_PRESETS[a.preset]
+        a.expect = [*preset, *a.expect]
+        a.label = a.label or a.preset
+    if not a.label:
+        die("json-shape: --label or --preset", 2)
+    if not any(tuple(argv[:len(p)]) == p for p in SHAPE_ARGV) or not {"json", "--json"} & set(argv):
+        die(f"json-shape runs only {[' '.join(p) for p in SHAPE_ARGV]} with a JSON output flag", 2)
+    if any(x.startswith("~") or "$" in x for x in argv):
+        die("json-shape: no '~' or '$' in arguments", 2)
+    code, out, err = sh(argv, cwd=run.proj)
+    data = jload(out)
+    paths = key_paths(data) if data is not None else {}
+    lines = [f"{p}\t{'|'.join(sorted(t))}" for p, t in sorted(paths.items())]
+    missing = [p for p in a.expect if p not in paths]
+    (run.ev / "steps" / f"{run.next_id('shape-' + a.label)}.txt").write_text(
+        f"$ {' '.join(argv)}   (key paths and value types only)\n# exit: {code}\n" + "".join(f"{x}\n" for x in lines))
+    checks = [(f"{' '.join(argv[:4])} exited 0 with JSON", code == 0 and data is not None, f"exit {code}"),
+              ("every expected key path present", not missing, f"missing {missing}" if missing
+               else f"{len(a.expect)} expected, {len(paths)} seen")]
+    return print_checks(f"json-shape {a.label}", checks, run)
+
+
+def cmd_msg_probe(a) -> int:
+    """Live check (c): send one probe text N times with the SAME --message-ref from one recorded agent to another,
+    then count how many user records of the target's transcript carry the probe's marker (deliveries). projmux
+    deduplicating on the ref means one delivery. The text names no tool and asks for nothing."""
+    run = Run.load(a.run)
+    target, source = run.resolve_agent(a.to), run.resolve_agent(a.source)
+    if target == source:
+        die("msg-probe: --to and --source must be two different recorded agents", 2)
+    marker = f"SMV-PROBE-{run.data['step']:03d}-{os.urandom(4).hex()}"
+    ref = f"smv-probe-{marker.lower()}"
+    text = f"smv delivery probe {marker}. No action needed: reply with the single word ack."
+    first = dt.datetime.now(dt.timezone.utc)
+    receipts = []
+    for n in range(a.times):
+        code, out, err = run.cmd(f"probe-send-{n + 1}", ["projmux", "agent", "message", "send", f"uid:{target}",
+                                                         "--source", f"uid:{source}", "--message-ref", ref, "--",
+                                                         text])
+        line = next((x for x in (out + err).splitlines() if x.startswith(ref)), "")
+        receipts.append(f"send {n + 1}: exit {code} receipt {'/'.join(line.split(chr(9))[1:3]) or '-'}")
+    def deliveries() -> int:
+        path = transcript_source(run, target)
+        return sum(1 for raw in (path.read_text(errors="replace").splitlines() if path else [])
+                   if isinstance(r := jload(raw), dict) and r.get("type") == "user"
+                   and (parse_ts(r.get("timestamp")) or first) >= first and marker in json.dumps(r.get("message")))
+
+    deadline = time.time() + a.wait
+    while deliveries() < a.expect_deliveries and time.time() < deadline:
+        time.sleep(min(3, a.settle or 3))
+    time.sleep(a.settle)  # room for a duplicate delivery to arrive before the count is final
+    count = deliveries()
+    record_transcript(run, target, "msg-probe", [f"probe {marker}: {count} delivery record(s)"])
+    checks = [*((r, True, "info") for r in receipts),
+              (f"deliveries of one message-ref == {a.expect_deliveries}", count == a.expect_deliveries,
+               f"{count} user record(s) carry the marker")]
+    run.update(lambda d: d.setdefault("probes", []).append({"marker": marker, "ref": ref, "to": target,
+                                                            "from": source, "sends": a.times, "deliveries": count,
+                                                            "at": now_iso()}))
+    return print_checks("msg-probe", checks, run)
 
 
 # ---------------------------------------------------------------- offline self-tests (tests/, stubs only)
@@ -2339,6 +3098,7 @@ def main(argv: list[str] | None = None) -> int:
     p = add("launch", cmd_launch, "create the run, the projmux project and the PM Claude pane")
     p.add_argument("--scratch-root", required=True)
     p.add_argument("--prefix", default="smv")
+    p.add_argument("--pm-role", action="store_true", help="label the PM pane role=pm (needed by the mesh MCP tools)")
     p.add_argument("--timeout", type=int, default=300,
                    help="seconds for the whole launch: every step and wait shares this budget")
     p = add("doctor", cmd_doctor, "read-only: is this instance worth driving?")
@@ -2399,12 +3159,49 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--file", required=True)
     p.add_argument("--text", default="smv fixture")
     p.add_argument("--line", action="append", default=[], help="one line of the file (repeatable; replaces --text)")
-    add("mkt-project", cmd_mkt_project, "declare the marketplace in the scratch project (CLI, --scope project)")
+    p = add("mkt-project", cmd_mkt_project, "export a commit as a scratch-named marketplace and declare it in the "
+            "scratch project (CLI, --scope project)")
+    p.add_argument("--commit", default="HEAD", help="the commit under test (default HEAD); one per run")
     p = add("scope-pick", cmd_scope_pick, "after /plugin install: highlight the exact project-scope option, verify, "
             "Enter", agent=True)
     p.add_argument("--max-moves", type=int, default=6)
     p.add_argument("--timeout", type=int, default=120, help="seconds to wait for the prompt after Enter")
     add("plugin-check", cmd_plugin_check, "assert the project-scope install from this checkout")
+    p = add("state-check", cmd_state_check, "extract .mesh/state.json (hashed, selected fields) and check it")
+    p.add_argument("--label", required=True)
+    p.add_argument("--item", help="an item id to check")
+    p.add_argument("--expect-phase")
+    p.add_argument("--expect-verbs", help="comma list the item's history must hold in order (e.g. new,ready,start)")
+    p.add_argument("--expect-evidence-pass", action="store_true", help="the last attempt's runs all passed")
+    p.add_argument("--baseline", help="an earlier state-check label: report the operator-event delta")
+    p.add_argument("--expect-operator-delta", type=int)
+    p.add_argument("--expect-operator-from-pm", action="store_true")
+    p = add("mesh-config", cmd_mesh_config, "the operator's hand edit: add one verify command to .mesh/config.toml")
+    p.add_argument("--verify-file", required=True, help="relative path the verify command tests with test -f")
+    p.add_argument("--timeout-s", type=int, default=60)
+    p = add("mcp-check", cmd_mcp_check, "read the /mcp dialog on screen: supervisor-mesh connected (no key pressed)",
+            agent=True)
+    p = add("mcp-calls", cmd_mcp_calls, "supervisor-mesh MCP tool calls and results from the transcript (by id)",
+            agent=True)
+    p.add_argument("--since-last-send", action="store_true")
+    p.add_argument("--expect", action="append", default=[], metavar="TOOL[=ok|error|any]")
+    p.add_argument("--all-tools", action="store_true", help="every tool the export registers answered once")
+    p.add_argument("--prefix", help="the tool-name prefix every call must carry")
+    p = add("mcp-env", cmd_mcp_env, "the MCP server under the pane got the pane identity env (presence/equality)",
+            agent=True)
+    p.add_argument("--proc-root", default="/proc", help=argparse.SUPPRESS)
+    p = add("json-shape", cmd_json_shape, "key paths and types of one read-only JSON command (never values)")
+    p.add_argument("--label")
+    p.add_argument("--preset", choices=sorted(SHAPE_PRESETS), help="a listed command with its expected key paths")
+    p.add_argument("--expect", action="append", default=[], metavar="KEY.PATH")
+    p.add_argument("argv", nargs=argparse.REMAINDER)
+    p = add("msg-probe", cmd_msg_probe, "send one probe N times with one --message-ref; count deliveries")
+    p.add_argument("--to", required=True, help="pm | role:<role> | <recorded uid>")
+    p.add_argument("--source", required=True, help="pm | role:<role> | <recorded uid>")
+    p.add_argument("--times", type=int, default=2)
+    p.add_argument("--expect-deliveries", type=int, default=1)
+    p.add_argument("--wait", type=int, default=120)
+    p.add_argument("--settle", type=int, default=20)
     p = add("fake-slack", cmd_fake_slack, "FakeSlack from tests/test_slack.py: start|say|summary|stop")
     p.add_argument("action", choices=["start", "say", "summary", "stop", "serve"])
     p.add_argument("--text")

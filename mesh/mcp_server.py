@@ -37,7 +37,7 @@ PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR =
 
 def plugin_version() -> str:
     try:
-        manifest = json.loads(
+        manifest = layers.parse_json(
             (Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json").read_text("utf-8")
         )
         return str(manifest.get("version", "0"))
@@ -127,12 +127,14 @@ def serve(reader: BinaryIO, writer: TextIO, ctx: tools.Context) -> None:
     first `tools/call` of a client that skipped it. Never before the client has spoken (it would delay the handshake
     and act for a session that may never use the server)."""
     recovered = False
-    for raw in reader:
-        line = raw.strip()
-        if not line:
+    for raw in layers.bounded_lines(reader):
+        line = raw.strip() if raw is not None else None
+        if line == b"":
             continue
         try:
-            msg = json.loads(line)
+            if line is None:
+                raise ValueError("line too long")
+            msg = layers.parse_json(line)
         except ValueError:
             msg, reply = None, _error(None, PARSE_ERROR, "parse error")
         else:

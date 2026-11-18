@@ -15,7 +15,7 @@ recorded (D82). Identity comes from the calling projmux pane (`identity`) only.
 
 from __future__ import annotations
 
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
@@ -62,7 +62,7 @@ from .model import (
 )
 from .projmux import Projmux, ProjmuxUnavailable
 from .store import Store
-from .tmux import Tmux
+from .tmux import Tmux, TmuxFailed, valid_pane_id
 
 ToolRefused = layers.RefusedError  # one refusal type for every tool (D95)
 ToolResult = layers.ToolResult
@@ -71,6 +71,10 @@ once_per_request = layers.once_per_request
 
 class UnknownTool(KeyError):  # noqa: N818
     pass
+
+
+# tool-level refusal codes outside the transition table (pane_command's are `pane.CODES`)
+TOOL_CODES = frozenset({RefusalCode.CONFIRM_FAILED, RefusalCode.RE_PIN_REFUSED, RefusalCode.OUTSIDE_ROOT})
 
 
 def utc_now() -> str:
@@ -87,7 +91,7 @@ def caller_from_env(
     if root is None:
         return Caller.unknown
     resolver = pmx or Projmux(env)
-    return lambda: identity.resolve(env, root, resolver).caller
+    return identity.PaneCaller(env, root, resolver)
 
 
 @dataclass
@@ -212,7 +216,7 @@ REGISTRY: dict[str, Tool] = {}
 def tool(name: str, description: str, args: type, access: str, *, read_only: bool = False, schema_hook=None):
     def register(fn):
         REGISTRY[name] = Tool(
-            name, description, args, fn, access, read_only, schema_hook, layers.tool_layer(name, args, fn)
+            name, description, args, fn, access, read_only, schema_hook, layers.tool_layer(name, args, fn, read_only)
         )
         return fn
 
@@ -254,7 +258,10 @@ def _phase_name(phase: Phase | None) -> str | None:
 
 
 def _apply(ctx: Context, verb: Verb, args: Any, item_id: str | None) -> dict:
-    """One verb through the engine's one path. A refusal is raised as ToolRefused (already recorded)."""
+    """One verb through the engine's one path. A refusal is raised as ToolRefused (already recorded). An operator
+    override needs the D113 code first."""
+    if verb is Verb.OVERRIDE and ctx.caller().kind is CallerKind.PM:
+        _confirm(ctx, ctx.caller(), verb.value, item_id)
     out = ctx.engine.execute(Request(verb, ctx.caller(), args, ctx.clock(), item_id))
     if isinstance(out, Refused):
         raise ToolRefused(out.refusal)
@@ -286,7 +293,8 @@ def _pm_only(ctx: Context, subject: str, caller: Caller) -> None:
     is nowhere to record it); an UNKNOWN caller is told how to become the PM (D82)."""
     if caller.kind is CallerKind.PM:
         return
-    detail = f"{subject} is a PM tool" + (f"; {init.PM_LABEL_HINT}" if caller.kind is CallerKind.UNKNOWN else "")
+    hint = caller.why or init.PM_LABEL_HINT
+    detail = f"{subject} is a PM tool" + (f"; {hint}" if caller.kind is CallerKind.UNKNOWN else "")
     _refuse(ctx, subject, RefusalCode.CALLER_NOT_PM, detail, caller)
 
 
@@ -310,14 +318,20 @@ def _rows(rows) -> list[dict]:
 def mesh_init(ctx: Context, args: InitArgs) -> dict:
     root = _root(ctx)
     caller = ctx.caller()
+    repin = None
     if args.apply:
         _pm_only(ctx, "mesh_init", caller)
         if not args.plan_id:
             raise InvalidArgs("apply needs the plan_id of the dry run the operator saw")
+        repin = _pin_check(ctx, caller)
     try:
         result = init.mesh_init(root, PLUGIN_ROOT, args.stack, args.apply, args.plan_id)
     except init.PlanChanged as exc:
         raise PlanChanged(str(exc), hint="run mesh_init without apply and show the new plan") from None
+    except init.OutsideRoot as exc:
+        raise OutsideRoot(str(exc), hint="replace the symlink with a real file or directory in the project") from None
+    if result.applied:
+        _pin(ctx, caller, repin)
     have = companions.present(_home(ctx.env), root)
     install = companions.plan_for(have)
     nxt = []
@@ -348,6 +362,98 @@ def mesh_init(ctx: Context, args: InitArgs) -> dict:
         "install_plan": install,
         "next": nxt,
     }
+
+
+class OutsideRoot(MeshError):  # noqa: N818
+    code = RefusalCode.OUTSIDE_ROOT.value
+
+
+def _pin_check(ctx: Context, caller: Caller):
+    """D109 / D114 at mesh_init apply: None (no pin yet, or the caller is the pinned PM with no re-pin asked), or the
+    pending re-pin to apply. A re-pin needs the operator's hook-recorded `re-pin <this uid>` from this pane (unused),
+    the pinned PM agent not Running (when it is another agent) and the D113 code; anything else is refused and the
+    pin is kept."""
+    try:
+        doc = ctx.store.read().doc
+    except NotInitialized:
+        return None
+    rp = doc.pm_repin if doc.pm_repin is not None and doc.pm_repin.agent_uid == caller.agent_uid else None
+    if doc.pm_uid is None or (doc.pm_uid == caller.agent_uid and rp is None):
+        return None
+    if rp is None:
+        _refuse(ctx, "mesh_init", RefusalCode.CALLER_NOT_PM, f"mesh_init apply: {layers.OTHER_PM_WHY}", caller)
+    bound = layers.bind_event(
+        doc, layers.resolve_event(ctx.store, rp.event_id), fresh=False, tokens=("re-pin",),
+        unbound="the re-pin event must name `re-pin` (D109)",
+    )  # fmt: skip
+    if isinstance(bound, layers.Unbound):
+        _refuse(ctx, "mesh_init", bound.code, bound.detail, caller)
+    if doc.pm_uid != caller.agent_uid:
+        root, pmx = _adapters(ctx)
+        try:
+            running = any(a.uid == doc.pm_uid and a.phase == "Running" for a in pmx.agents())
+        except ProjmuxUnavailable:
+            running = True  # fail closed
+        if running:
+            _refuse(
+                ctx, "mesh_init", RefusalCode.RE_PIN_REFUSED,
+                "the pinned PM agent is still Running (D114): stop it first, then re-run mesh_init apply", caller,
+            )  # fmt: skip
+    _confirm(ctx, caller, "mesh_init")
+    return rp
+
+
+def _pin(ctx: Context, caller: Caller, repin) -> None:
+    """mesh_init apply pins the PM (D109): the first apply, a pre-D109 state.json, or a checked re-pin."""
+    if caller.kind is not CallerKind.PM or not caller.agent_uid or not ctx.store.initialized():
+        return
+    with ctx.store.locked() as txn:
+        doc = txn.doc
+        if repin is not None:
+            event = layers.resolve_event(ctx.store, repin.event_id)
+            doc = layers.consume(doc, event, "re_pin", repin.agent_uid, "done")
+            doc = replace(doc, pm_uid=repin.agent_uid, pm_session=repin.session, pm_repin=None)
+        elif doc.pm_uid is None:
+            doc = replace(doc, pm_uid=caller.agent_uid)
+        else:
+            return
+        txn.commit(doc)
+
+
+def _pm_popup(ctx: Context) -> Callable[[list[str], float], bool]:
+    """The D113 popup on the PM pane's tmux client (the caller's own pane, as projmux reports it)."""
+
+    def popup(argv: list[str], timeout_s: float) -> bool:
+        pane_uid = ctx.env.get(identity.PANE_VAR)
+        if not pane_uid or ctx.pmx is None:
+            return False
+        try:
+            tmux_id = next((p.tmux_id for p in ctx.pmx.panes() if p.uid == pane_uid), None)
+            if not valid_pane_id(tmux_id):  # D116
+                return False
+            return (ctx.tmux or Tmux(ctx.env)).popup(tmux_id, argv, timeout_s)
+        except (ProjmuxUnavailable, TmuxFailed):
+            return False
+
+    return popup
+
+
+def _confirm(ctx: Context, caller: Caller, subject: str, item_id: str | None = None) -> None:
+    """D113: refused unless the operator types the one-time popup code."""
+    why = layers.confirm(_pm_popup(ctx), _config(ctx).confirm_timeout_s)
+    if why is not None:
+        layers.refuse(
+            ctx.store,
+            layers.tool_refusal(
+                subject,
+                RefusalCode.CONFIRM_FAILED,
+                f"the operator did not confirm the one-time code in the PM pane's popup ({why}); "
+                "ask them to retry (D113)",
+                ctx.clock(),
+                caller,
+                item_id,
+            ),
+        )
 
 
 def _root(ctx: Context) -> Path:
@@ -483,11 +589,12 @@ def work_dispatch(ctx: Context, args: DispatchArgs) -> dict:
             if not replayed.get("superseded"):
                 warnings = status.overlaps_with(ctx.store.read().doc, item)
                 return {"item_id": item.id, "dispatch": {**replayed, "replayed": True}, "warnings": warnings}
-    text = dispatch.compose(item, root) if item is not None else ""
-    if len(text.encode("utf-8")) > dispatch.MAX_ORDER:
+    ref = f"mesh-{state.next_action_id(item, 'd')}" if item is not None else ""
+    text = dispatch.compose(item, root, ref) if item is not None else ""
+    if len(text.encode("utf-8")) > dispatch.MAX_MESSAGE:
         raise InvalidArgs(
-            f"the composed order is larger than {dispatch.MAX_ORDER} bytes; shorten the contract "
-            "(move detail into the work-order file)"
+            f"the composed message is larger than {dispatch.MAX_MESSAGE} bytes (the projmux limit); shorten the "
+            "work-order or report path"
         )
     sha = dispatch.text_sha256(text) if item is not None else "0" * 64
     out = _apply(ctx, Verb.DISPATCH, DispatchSend(sha), args.item_id)
@@ -532,8 +639,8 @@ def recover(ctx: Context) -> None:
 
 def _send_order(ctx: Context, item: Item, action) -> dict:
     root, pmx = _adapters(ctx)
-    text = dispatch.compose(item, root)
     payload = action.payload
+    text = dispatch.compose(item, root, payload["message_ref"])
     why = None
     if item.phase is not Phase.READY:
         why = "item left ready"
@@ -633,10 +740,16 @@ def tracker_render(ctx: Context, args: RenderArgs) -> dict:
 )
 def pane_command(ctx: Context, args: PaneCommandArgs) -> dict:
     root, pmx = _adapters(ctx)
-    pc = pane.PaneCommand(
-        ctx.store, pmx, ctx.tmux or Tmux(ctx.env), root, ctx.env.get(identity.PANE_VAR) or None, ctx.clock()
-    )
     caller = ctx.caller()
+    pc = pane.PaneCommand(
+        ctx.store,
+        pmx,
+        ctx.tmux or Tmux(ctx.env),
+        root,
+        ctx.env.get(identity.PANE_VAR) or None,
+        ctx.clock(),
+        confirm=lambda: _confirm(ctx, caller, "pane_command"),
+    )
     if args.propose:
         return pc.propose(caller, args.role, args.command)
     return pc.send(caller, args.role, args.command, args.event_id, args.item_id)
@@ -664,6 +777,7 @@ def companions_install(ctx: Context, args: InstallArgs) -> dict:
     plugins = companions.wanted(have, args.only)
     if not plugins:
         return {"receipt": None, "installed": [], "manual": manual, "note": "nothing to install; the event is unused"}
+    _confirm(ctx, caller, "companions_install")  # D113
     with ctx.store.locked() as txn:  # consume the event before anything runs (single use)
         _check_install_event(ctx, caller, txn.doc, event, tokens)
         txn.commit(layers.consume(txn.doc, event, "companions_install", ",".join(plugins), "attempting"))

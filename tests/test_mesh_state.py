@@ -11,7 +11,7 @@ from _helpers import ROOT
 from _mesh_tla import load_probe_names, load_table, parse_table
 
 sys.path.insert(0, str(ROOT))
-from mesh import state  # noqa: E402
+from mesh import state, tools  # noqa: E402
 from mesh.model import (
     CREATED,
     NO_FACTS,
@@ -124,6 +124,7 @@ def item_in(phase, item_id="WO-0001", **kw):
 
 
 def doc_of(*items, **kw):
+    kw.setdefault("pm_uid", "pm-uid")  # D109: the tests' PM agent is pinned, as mesh_init apply would pin it
     return replace(empty_doc(), items={i.id: i for i in items}, next_id=len(items) + 1, **kw)
 
 
@@ -1356,7 +1357,7 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(all((r.trigger is not None) == (r.verb is Verb.MESH) for r in state.TABLE))
 
     def test_every_refusal_code_is_reachable_and_no_guard_names_a_missing_one(self):
-        generic = {
+        generic = tools.TOOL_CODES | {
             RefusalCode.NOT_IN_TABLE,
             RefusalCode.UNKNOWN_CALLER,
             RefusalCode.UNKNOWN_ITEM,

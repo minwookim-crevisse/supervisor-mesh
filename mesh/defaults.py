@@ -28,8 +28,9 @@ operator_channel = "terminal"
 
 _VERIFY = """
 # Verification, argv only (never a shell string), in a disposable worktree at the submitted commit. `prepare` runs
-# first (same timeout/env rules; a failure is class environment, D91). `fail_if_output`: regexes that FAIL a command
-# that exited 0 when a line of its output matches (D92); at [verify] level they apply to every command.
+# first (same timeout/env rules; a failure is class environment, D91). `fail_if_output`: literal substrings (D115,
+# never regexes) that FAIL a command that exited 0 when a line of its output contains one (D92); at [verify] level
+# they apply to every command.
 [verify]
 {fail}# prepare = ["npm", "ci", "--prefer-offline"]
 # prepare_timeout_s = 600

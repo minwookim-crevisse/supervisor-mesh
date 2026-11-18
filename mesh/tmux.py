@@ -10,6 +10,7 @@ repo-own and not importable from a shipped module.
 from __future__ import annotations
 
 import re
+import shlex
 from enum import StrEnum
 from typing import Mapping
 
@@ -93,6 +94,14 @@ class TmuxFailed(Exception):  # noqa: N818
     pass
 
 
+PANE_ID = re.compile(r"%[0-9]+")
+
+
+def valid_pane_id(pane_id: object) -> bool:
+    """D116: a tmux pane target from projmux must be exactly `%<digits>` (no session, option or separator syntax)."""
+    return isinstance(pane_id, str) and PANE_ID.fullmatch(pane_id) is not None
+
+
 class Tmux:
     def __init__(self, env: Mapping[str, str] | None = None, exe: str = "tmux"):
         self.env = dict(env) if env is not None else None
@@ -117,3 +126,17 @@ class Tmux:
     def clear_line(self, pane_id: str) -> None:
         """C-u: erase the input line (an aborted keypress leaves nothing behind in the box)."""
         self._run("send-keys", "-t", pane_id, "C-u")
+
+    def popup(self, pane_id: str, argv: list[str], timeout_s: float) -> bool:
+        """D113: run `argv` in a popup on the client showing `pane_id` (popup content is not pane content:
+        capture-pane cannot read it). The argv names a helper and its temp dir only, never a secret. True: started."""
+        clients = self._run("list-clients", "-t", pane_id, "-F", "#{client_name}").split()
+        if not clients:
+            return False
+        r = runner.run(
+            [self.exe, *SOCKET, "display-popup", "-c", clients[0], "-t", pane_id, "-E", "-w", "72", "-h", "9",
+             shlex.join(argv)],
+            timeout=timeout_s + 5,
+            env=self.env,
+        )  # fmt: skip
+        return r.ok

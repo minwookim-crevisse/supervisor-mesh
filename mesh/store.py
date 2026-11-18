@@ -34,8 +34,9 @@ import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
+from . import layers
 from .model import (
     DEFAULT_TYPES,
     PREPARE_KIND,
@@ -80,6 +81,14 @@ class StateCorrupt(MeshError):  # noqa: N818
     code = "state_corrupt"
 
 
+class HookRefused(Exception):  # noqa: N818
+    """The hook records nothing; `code` is the hook_error line's fixed error code (never a value)."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class Snapshot:
     doc: Doc
@@ -105,9 +114,13 @@ def load_doc(raw: object, *, strict: bool = True) -> Doc:
         if derived != expected:
             raise StateCorrupt(f"item {item_id}: state/blocked_reason {derived} contradict phase {phase!r}")
     try:
-        return from_json(Doc, raw, strict=strict)
+        doc = from_json(Doc, raw, strict=strict)
     except (InvalidArgs, InvariantViolation) as exc:
         raise StateCorrupt(f"state.json: {exc}") from exc
+    bad = doc.override_errors()  # D112 (F6): a hand-made override has no operator event behind it
+    if bad:
+        raise StateCorrupt(f"state.json: {bad[0]}")
+    return doc
 
 
 # ---------------------------------------------------------------- config.toml as a value
@@ -144,6 +157,8 @@ def parse_config(text: str) -> Config:
         raise InvalidArgs("config.toml: dispatch.backoff_s must be a number from 0 to 60")
     stall = raw.get("status", {}).get("stall_minutes", defaults.stall_minutes)
     _positive_int(stall, "status.stall_minutes")
+    confirm_timeout = raw.get("confirm", {}).get("timeout_s", defaults.confirm_timeout_s)
+    _positive_int(confirm_timeout, "confirm.timeout_s")
     return Config(
         limits.get("retry", defaults.retry_limit),
         limits.get("environment_unblock", defaults.environment_limit),
@@ -156,6 +171,7 @@ def parse_config(text: str) -> Config:
         retry,
         float(backoff),
         stall,
+        confirm_timeout,
     )
 
 
@@ -172,14 +188,11 @@ def _prepare(verify: dict) -> Command | None:
 
 
 def _patterns(value: object, path: str) -> tuple[str, ...]:
-    """D92 regexes: a list of strings that compile."""
+    """D115: a list of non-empty literal strings, each at most `layers.MAX_PATTERN` characters (never compiled)."""
     if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
-        raise InvalidArgs(f"config.toml: {path} must be a list of non-empty regex strings")
-    for p in value:
-        try:
-            re.compile(p)
-        except re.error as exc:
-            raise InvalidArgs(f"config.toml: {path}: {p!r} is not a valid regex ({exc.msg})") from None
+        raise InvalidArgs(f"config.toml: {path} must be a list of non-empty strings (literal substrings)")
+    if any(len(p) > layers.MAX_PATTERN for p in value):
+        raise InvalidArgs(f"config.toml: {path}: an entry is longer than {layers.MAX_PATTERN} characters")
     return tuple(value)
 
 
@@ -260,8 +273,8 @@ class Store:
         except FileNotFoundError:
             raise NotInitialized("no .mesh/state.json", hint="run mesh_init") from None
         try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
+            raw = layers.parse_json(text)
+        except ValueError as exc:
             raise StateCorrupt(f"state.json is not JSON: {exc}") from exc
         version = raw.get("schema_version") if isinstance(raw, dict) else None
         if isinstance(version, bool) or not isinstance(version, int):
@@ -344,9 +357,9 @@ class Store:
         out = []
         for line in text.split("\n"):  # not splitlines(): U+2028 / U+2029 / U+0085 inside a JSON string are text
             try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue  # a torn last line never blocks a read
+                out.append(layers.parse_json(line))
+            except ValueError:
+                continue  # a torn last line (or a hostile nesting, F8) never blocks a read
         return out
 
     def append_refusal(self, refusal: Refusal) -> None:
@@ -356,14 +369,38 @@ class Store:
         rows = self._lines(self.refusals_path)
         return rows if last is None else rows[-last:]
 
-    def record_operator_event(self, text: str, at: str, agent_uid: str | None = None) -> OperatorEvent:
+    def record_operator_event(
+        self,
+        text: str,
+        at: str,
+        agent_uid: str | None = None,
+        *,
+        entry: str | None = None,
+        check: Callable[[Doc], str | None] | None = None,
+        edit: Callable[[Doc, OperatorEvent], Doc] | None = None,
+    ) -> OperatorEvent:
         """Section 9a: the hook path. The seq and the record's hash are taken under the lock and committed BEFORE the
-        line is appended, so a crash in between loses the event but never reuses a seq."""
+        line is appended, so a crash in between loses the event but never reuses a seq. D112 (F7): the seq is above
+        every seq already in events.jsonl, so a line planted ahead never shares a seq with a genuine event. D110:
+        `entry` (the transcript entry hash) backs one event only; `check` re-decides on the fresh document (an error
+        code raises HookRefused) and `edit` adds to the commit (a session pin, a pending re-pin)."""
         with self.locked() as txn:
-            seq = txn.doc.seq + 1
+            doc = txn.doc
+            why = check(doc) if check is not None else None
+            if why is None and entry is not None and entry in doc.transcript_entries:
+                why = "transcript_entry_reused"
+            if why is not None:
+                raise HookRefused(why)
+            logged = [r.get("seq") for r in self._lines(self.events_path)]
+            seq = max([doc.seq, *(n for n in logged if isinstance(n, int) and not isinstance(n, bool))]) + 1
             event = OperatorEvent(f"ev-{seq:06d}", seq, at, text, agent_uid)
-            hashes = {**txn.doc.operator_event_sha256, str(seq): event_sha256(event)}
-            txn.commit(replace(txn.doc, seq=seq, last_operator_seq=seq, operator_event_sha256=hashes))
+            hashes = {**doc.operator_event_sha256, str(seq): event_sha256(event)}
+            doc = replace(doc, seq=seq, last_operator_seq=seq, operator_event_sha256=hashes)
+            if entry is not None:
+                doc = replace(doc, transcript_entries={**doc.transcript_entries, entry: seq})
+            if edit is not None:
+                doc = edit(doc, event)
+            txn.commit(doc)
             self._append(self.events_path, {"type": "operator", **to_json(event)})
         return event
 
@@ -382,10 +419,10 @@ class Store:
         return self._operator_events()
 
     def _operator_events(self) -> list[OperatorEvent]:
-        """An `operator` line counts only when (1) its id is `ev-<seq:06d>`, (2) it is the ONLY operator line with that
-        seq, (3) its seq is at most `last_operator_seq` and (4) its record hashes to the value state.json holds for
-        that seq (written under the lock when the hook recorded it). A line anyone appended or edited outside
-        `record_operator_event` fails one of these; so does the genuine line a forged copy shadows."""
+        """An `operator` line counts only when (1) its id is `ev-<seq:06d>`, (2) its seq is at most
+        `last_operator_seq`, (3) its record hashes to the value state.json holds for that seq (written under the lock
+        when the hook recorded it) and (4) it is the first such line for that seq. A line anyone appended or edited
+        outside `record_operator_event` fails (3); a forged copy with the same seq no longer hides the genuine line."""
         rows = [r for r in self._lines(self.events_path) if r.get("type") == "operator"]
         try:
             doc = self.read().doc
@@ -397,17 +434,17 @@ class Store:
                 parsed.append(from_json(OperatorEvent, {k: v for k, v in row.items() if k != "type"}))
             except InvalidArgs:
                 continue
-        per_seq: dict[int, int] = {}
-        for e in parsed:
-            per_seq[e.seq] = per_seq.get(e.seq, 0) + 1
-        return [
-            e
-            for e in parsed
-            if e.id == f"ev-{e.seq:06d}"
-            and per_seq[e.seq] == 1
-            and 0 < e.seq <= doc.last_operator_seq
-            and doc.operator_event_sha256.get(str(e.seq)) == event_sha256(e)
-        ]
+        out, seen = [], set()
+        for e in parsed:  # D112 (F7): a copy with the same seq and other text matches no hash and hides nothing
+            if (
+                e.seq not in seen
+                and e.id == f"ev-{e.seq:06d}"
+                and 0 < e.seq <= doc.last_operator_seq
+                and doc.operator_event_sha256.get(str(e.seq)) == event_sha256(e)
+            ):
+                seen.add(e.seq)
+                out.append(e)
+        return out
 
     def get_event(self, event_id: str) -> OperatorEvent | None:
         return next((e for e in self._operator_events() if e.id == event_id), None)

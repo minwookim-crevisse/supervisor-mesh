@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes
+from _mesh_fakes import Fakes, pin_pm, prompt_payload
 
 sys.path.insert(0, str(ROOT))
 from mesh import tools  # noqa: E402
@@ -60,7 +60,7 @@ class SubcommandTests(CliCase):
             self.assertIn(name, out.stdout)
 
     def test_a_tool_call_prints_its_json_result_and_the_exit_code_says_ok_or_error(self):
-        self.store.create()
+        pin_pm(self.store)  # D109
         new = self.run_cli(
             "work_new",
             "--goal",
@@ -93,7 +93,9 @@ class SubcommandTests(CliCase):
 
 class EventRecordTests(CliCase):
     def hook(self, prompt="please run /config", caller="pm:pm-uid", program=None, **extra):
-        payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s"})
+        if self.store.initialized() and self.store.read().doc.pm_uid is None:
+            pin_pm(self.store)  # D109: mesh_init apply pins the PM
+        payload = json.dumps(prompt_payload(self.tmp / "home", self.root, prompt))  # D110: a real user prompt
         return self.run_cli(
             "event", "record", "--source", "terminal", stdin=payload, caller=caller, program=program, **extra
         )
@@ -143,9 +145,7 @@ class EventRecordTests(CliCase):
         self.assertTrue(tools.call(ctx, "mesh_init", {"stack": "none", "apply": True, "plan_id": plan}).ok)
         settings = json.loads((self.root / ".claude" / "settings.json").read_text())
         command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-        payload = json.dumps(
-            {"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "install companions_install please"}
-        )
+        payload = json.dumps(prompt_payload(self.tmp / "home", self.root, "install companions_install please"))
         out = subprocess.run(
             ["sh", "-c", command], input=payload, capture_output=True, text=True, timeout=30, cwd=self.root, env=env
         )

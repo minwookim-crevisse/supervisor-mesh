@@ -93,6 +93,7 @@ class PaneCase(WireCase):
         self.seed(item_in(Phase.RUNNING))
         self.pm_agent()
         self.lead = self.fakes.agent("be-uid", "backend", self.root, pane="pane-be", tmux_id="%1")
+        self.fakes.set(popup="right")  # D113: a privileged command (/config) is confirmed in the PM pane's popup
 
     def event(self, text):
         return self.store.record_operator_event(text, "2026-11-18T00:00:00Z").id

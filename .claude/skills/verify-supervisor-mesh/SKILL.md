@@ -2,10 +2,11 @@
 name: verify-supervisor-mesh
 description: >-
   Drive the supervisor-mesh Claude Code plugin end to end the way a user does - a Claude pane created by projmux in
-  a throwaway projmux project, the marketplace declared from this checkout and the plugin installed at PROJECT
-  scope, its slash commands typed into the pane over tmux - and keep file hashes, pane captures, redacted
-  transcript extracts and exit codes as evidence. Use to prove init / add-agent / spawn-roles / dispatch / gc /
-  slack-setup behaviour live after changing skills/, agents/ or templates/, or when unit tests are not proof enough.
+  a throwaway projmux project, a commit of this checkout exported as a scratch-named marketplace and the plugin
+  installed at PROJECT scope, its slash commands typed into the pane over tmux - and keep file hashes, pane captures,
+  redacted transcript extracts and exit codes as evidence. Use to prove init / add-agent / spawn-roles / dispatch /
+  gc / slack-setup / the MCP server behaviour live after changing skills/, agents/, templates/ or mesh/, or when unit
+  tests are not proof enough.
 ---
 
 # verify-supervisor-mesh
@@ -18,8 +19,11 @@ Verified against: projmux 0.17.2, Claude Code 2.1.310, tmux 3.4, Python 3.12, pl
 Helpers was checked with `--help` on these versions; on 2.1.310 the claude flags (`plugin marketplace add|remove
 --scope --json`, `plugin install|uninstall --scope`, `plugin list --json`) were re-checked live and none changed. The
 review fixes added no projmux, claude or tmux flag, only `git status --ignored=matching`. If `projmux version` or
-`claude --version` differs, re-check those flags before trusting a FAIL. Before a live run, `"$SMV" selftest` must
-exit 0 (offline, Helpers).
+`claude --version` differs, re-check those flags before trusting a FAIL. On 2026-11-18 the installed versions were
+projmux 0.18.0 and Claude Code 2.1.327: `claude plugin marketplace add|remove --help` (`--scope`, `--json`) and
+`projmux create claude --help` (repeatable `--label`), `get panes --help` (`-A`) and `agent message send --help`
+(`--source`, `--message-ref`) were re-read offline; the other flags are re-checked at the next live run. Before a
+live run, `"$SMV" selftest` must exit 0 (offline, Helpers).
 
 ## Hard rules
 
@@ -32,15 +36,24 @@ exit 0 (offline, Helpers).
    menu block: the lines after `Will install:` (else the nearest rule above the options) and before the footer
    `Enter to select · Esc to go back`; the input box and the scrollback above never count. Anything else is exit 12:
    stop and ask. Enter is never pressed on an unverified highlight.
-3. Project scope only. The marketplace is always declared with
-   `claude plugin marketplace add <checkout> --scope project`, run in the scratch project (`smv mkt-project`). The slash
-   `/plugin marketplace add` is never used, because it writes the declaration to user settings.
+3. Project scope only, and never the name `supervisor-mesh`. The registry of known marketplaces is keyed by name and
+   shared by every scope: a project-scope `marketplace add` of a name that is already registered rewrites that entry's
+   source for every project (seen live 2026-11-18: "was already added from dir:... and now points at github:...").
+   The user's own `supervisor-mesh` entry (GitHub source) is therefore never added, removed or declared. `smv
+   mkt-project` exports the commit under test (`git archive`), renames only the manifest's `name` to the run's own
+   `smv-<run-id>`, and declares that export with `claude plugin marketplace add <export> --scope project`, run in the
+   scratch project. The plugin id is `supervisor-mesh@smv-<run-id>`. The slash `/plugin marketplace add` is never
+   used, because it writes the declaration to user settings.
 4. User config is compared, never copied. `~/.claude/settings.json` and the plugin registry files under
    `~/.claude/plugins/` (`known_marketplaces.json`, `installed_plugins.json`) are snapshotted as a whole-file sha256
    plus keyed per-key digests. A mismatch prints and stores the changed key paths only (for example
-   `CHANGED enabledPlugins.x`), never a value. `claude plugin list --json` rows go into evidence as (id, scope, keyed
-   digest) only. Any change to `~/.claude/settings.json` is a doctor and cleanup FAIL. No flag excuses a user-config or
-   lead-tree difference. Claude transcripts are never copied either: evidence keeps their path, sha256 and size and a
+   `CHANGED enabledPlugins.x`), never a value. The oracle per file: `settings.json` whole-file equal;
+   `known_marketplaces.json` (rewritten by auto-refresh) the set of marketplace names (the baseline, plus exactly
+   `smv-<run-id>` while it is declared) and the `supervisor-mesh` entry's source; `installed_plugins.json` sha256 as
+   info, and every changed key path must name `@smv-<run-id>`, with no user-scope entry appearing or changing.
+   `claude plugin list --json` rows go into evidence as (id, scope, keyed digest) only. Any change to
+   `~/.claude/settings.json` is a doctor and cleanup FAIL. No flag excuses a user-config or lead-tree difference.
+   Claude transcripts are never copied either: evidence keeps their path, sha256 and size and a
    redacted extract of proof lines. No tool_result body, system reminder or CLAUDE.md text is ever written.
 5. Touch only what this run recorded in `evidence/run.json` (project uid, agent uids, FakeSlack pid). An agent is
    recorded when the run creates it, or when projmux's `projmux.io/creator-agent` annotation names an agent the run
@@ -107,18 +120,20 @@ bottom, with no dialog or numbered-menu text below it. A box higher up the scree
 - Anything else: keep the output (`"$SMV" status` and `"$SMV" capture --label L` work on a dead pane too), run
   `"$SMV" cleanup`, report.
 
-Install the plugin from this checkout:
+Install the plugin from a commit of this checkout:
 
 1. `"$SMV" doctor --pre` must end with `doctor: PASS`.
-2. `"$SMV" mkt-project` declares the marketplace in the scratch project with
-   `claude plugin marketplace add <checkout> --scope project --json`. It ends with `mkt-project: PASS` on four checks:
-   the add exited 0, the scratch `.claude/settings.json` declares `supervisor-mesh`, the registry entry
-   `supervisor-mesh` is this checkout (directory source), and the user `settings.json` sha256 did not change. Whether
-   the registry entry existed before the run is recorded once, before the first add; a repeated `mkt-project` keeps
-   that record, so cleanup still removes an entry this run created. Exit 21: another `supervisor-mesh` marketplace is
-   registered or declared at user scope; stop and ask, `smv` changes nothing. Then
-   `"$SMV" send --text "/reload-plugins"` and `"$SMV" wait --ready --settle 5`.
-3. `"$SMV" send --text "/plugin install supervisor-mesh@supervisor-mesh"`, then `"$SMV" wait --timeout 180`. Exit 12 is
+2. `"$SMV" mkt-project [--commit REF]` (default `HEAD`; one commit per run) exports the commit into
+   `<run>/mkt-src`, renames the manifest's `name` to `smv-<run-id>` and proves the export: the file set equals the
+   commit tree, every other file's git blob id equals the commit's, and the manifest differs at key path `name` only
+   (`evidence/export/tree.txt`, `manifest-keypaths.txt`). Then it declares the export in the scratch project with
+   `claude plugin marketplace add <export> --scope project --json`. It ends with `mkt-project: PASS` (the export
+   checks, the add exited 0, the scratch settings declare `smv-<run-id>` and not `supervisor-mesh`, the registry entry
+   `smv-<run-id>` is the export, the `supervisor-mesh` source is the same before and after the add, and the user
+   `settings.json` sha256 did not change) and prints `PLUGIN_ID=supervisor-mesh@smv-<run-id>`. Exit 21: the scratch
+   name is already registered or declared at user scope by something other than this run; stop and ask, `smv`
+   changes nothing. Then `"$SMV" send --text "/reload-plugins"` and `"$SMV" wait --ready --settle 5`.
+3. `"$SMV" send --text "/plugin install $PLUGIN_ID"`, then `"$SMV" wait --timeout 180`. Exit 12 is
    the expected result: the scope menu. A `send` exit 3 with `NOT SENT` here means the line was still in the box after
    Enter: `smv` never presses a second Enter on a `/plugin` line (it could pick the menu's default). Ask the operator.
 4. `"$SMV" scope-pick`. It ends with `scope-pick: PASS` after Enter on the verified line and the prompt coming back.
@@ -130,10 +145,11 @@ Install the plugin from this checkout:
    close it, then resume the same way. If `wait` in step 3 exits 124 with a plugin list in the
    capture, the details view did not open by itself: ask the operator to open `supervisor-mesh` there, then
    `"$SMV" wait --timeout 60` (exit 12) and `scope-pick`.
-5. `"$SMV" plugin-check` must end with `plugin-check: PASS`. This proves the choice: one project-scope entry whose
-   `projectPath` is the scratch project, no local-scope entry, installed version equal to `.claude-plugin/plugin.json`,
-   installed copy byte-identical to the checkout's shipped dirs, and the scratch `.claude/settings.json` enabling
-   `supervisor-mesh@supervisor-mesh`.
+5. `"$SMV" plugin-check` must end with `plugin-check: PASS`. This proves the choice: one project-scope entry of
+   `supervisor-mesh@smv-<run-id>` whose `projectPath` is the scratch project, no local-scope entry, installed version
+   equal to the export's `.claude-plugin/plugin.json`, installed copy byte-identical to the commit export's shipped
+   dirs and files (`mesh/` and `.mcp.json` included; never the working tree), the export unchanged since
+   `mkt-project`, and the scratch `.claude/settings.json` enabling the plugin id.
 6. `"$SMV" send --text "/reload-plugins"`, then `"$SMV" wait --ready --settle 5`.
 7. `"$SMV" doctor` must end with `doctor: PASS`. Now drive features.
 
@@ -148,13 +164,18 @@ and the isolation snapshot against the baseline:
 
 - FAIL on any change to the user `settings.json` (the changed key paths, `permissions` included, are named); on any
   `claude plugin list` row that is not this run's (user scope, or another project's) appearing, disappearing or
-  changing; on any marketplace registry row changing, except the `supervisor-mesh` entry a first-time project-scope
-  declaration adds; on any change in the default Slack state dir `~/.local/state/supervisor-mesh-slack` (existence,
+  changing; on any marketplace registry row changing, except the `smv-<run-id>` entry this run's declaration adds; on
+  the `supervisor-mesh` marketplace source (type and a sha256 of its repo or path, from `marketplace list`, and the
+  keyed digest of its `source` key in `known_marketplaces.json`) differing from the baseline or from what
+  `mkt-project` recorded (both are PASS/FAIL lines of their own); on the set of names in `known_marketplaces.json`
+  not equal to the baseline plus exactly `smv-<run-id>` (once declared; the baseline at cleanup); on a changed key
+  path of `installed_plugins.json` that does not name `@smv-<run-id>`, or a user-scope entry there appearing or
+  changing; on any change in the default Slack state dir `~/.local/state/supervisor-mesh-slack` (existence,
   and the name, type and content of every entry, as one keyed digest); on any lead-tree change, gitignored files
   included (`.env`, `__pycache__/`, state files are hashed file by file).
 - Info lines (PASS) for this run's own install row and for key paths changed in `known_marketplaces.json` /
-  `installed_plugins.json`, split into run-owned paths (`supervisor-mesh...`, `plugins.supervisor-mesh@supervisor-mesh`)
-  and other paths (for example a marketplace refresh timestamp). Report them.
+  `installed_plugins.json` with both files' sha256 before and after, split into run-owned paths (`smv-<run-id>...`,
+  `plugins.supervisor-mesh@smv-<run-id>`) and other paths (for example a marketplace refresh timestamp). Report them.
 
 Run it first whenever anything looks off. `doctor: FAIL` means do not drive: fix the cause, or clean up and launch
 again. A FAIL on "installed copy == checkout" means Claude Code served a cached copy of the same version; that is a real
@@ -194,7 +215,7 @@ Every interaction is `send` followed by `wait`:
 | 11 | permission prompt (screen, or status `approval_required`) | stop, ask the operator |
 | 12 | scope menu; from `scope-pick`: highlight not verified | after `/plugin install`: `scope-pick`; else ask |
 | 13 | unscripted dialog or question (`input_required`) | stop, ask the operator |
-| 21 | another `supervisor-mesh` marketplace is registered | stop, ask the operator |
+| 21 | the scratch marketplace name `smv-<run-id>` is already taken | stop, ask the operator |
 | 124 | timeout | capture, report; do not resend blindly |
 
 ### Stops and resume
@@ -229,8 +250,8 @@ The minimum proof journey is `features/init.md` (fresh, then re-run with every h
 ## Evidence
 
 Location: `<SCRATCH_ROOT>/<run-id>/evidence/` (printed as `EVIDENCE=`). It sits next to the scratch project, never
-inside it, and cleanup deletes only `<SCRATCH_ROOT>/<run-id>/proj/`. When `SCRATCH_ROOT` is a session scratchpad, copy
-the evidence directory somewhere durable before the session ends.
+inside it, and cleanup deletes only `<SCRATCH_ROOT>/<run-id>/proj/` and the commit export `mkt-src/`. When
+`SCRATCH_ROOT` is a session scratchpad, copy the evidence directory somewhere durable before the session ends.
 
 - `run.json`: everything this run created (project uid, agent uids, panes, FakeSlack pid), the last send to each
   agent (with the pre-send screen's sha256 and keyed line digests; `sends.log` has every send), the marketplace
@@ -247,6 +268,9 @@ the evidence directory somewhere durable before the session ends.
   line count of the whole screen and the screen state; kept lines carry their screen line numbers. The whole screen is
   hashed in memory and never written. The transcript area above the box (replies, tool-output previews) is never kept.
 - `hashes/<label>.sha256`: sha256 of every scratch-project file except `.git/`.
+- `export/tree.txt`, `export/manifest-keypaths.txt`: the commit export, entry by entry (object id, verdict,
+  path), and the manifest's differing key paths (`name` only).
+- `state/<label>.json`: `state-check`'s extract of the scratch `.mesh/` (selected fields, see Helpers).
 - `snapshots/*.json`: whole-file sha256 and keyed per-key digests of the user config files, (id, scope, keyed digest)
   per plugin row, (name, keyed digest) per marketplace row, the default Slack state dir (entry count and one keyed
   digest of every entry's name, type and content), lead-tree HEAD, `git status` with ignored entries, and the sha256 of
@@ -302,11 +326,15 @@ order. A rerun picks up from what is left.
    cwd; it never deletes them. Ask the operator, then rerun.
 2. Writes every live recorded agent's final transcript extract (meta and extract, as in Evidence) and final capture
    into `evidence/`.
-3. `claude plugin uninstall supervisor-mesh@supervisor-mesh --scope project --keep-data`, run in the scratch project,
+3. `claude plugin uninstall supervisor-mesh@smv-<run-id> --scope project --keep-data`, run in the scratch project,
    only when the project-scope entry for that path is listed; it must exit 0 and the row must be gone.
-4. `claude plugin marketplace remove supervisor-mesh --scope project --json` in the scratch project, only when this
-   run's declaration created the registry entry and the scratch settings still declare it. When the entry predates the
-   run, it is left as it was. Never without `--scope`: that removes the marketplace from every scope.
+4. `claude plugin marketplace remove smv-<run-id> --scope project --json` in the scratch project, by the name
+   `run.json` recorded, when the scratch settings still declare it. The scratch name is always created by this run
+   (`mkt-project` stops on an existing one), so this branch runs on every run that declared one. A recorded name that
+   is not a scratch name, or scratch settings declaring `supervisor-mesh`, is a FAIL with nothing removed. Then
+   `smv-<run-id>` must be gone from `claude plugin marketplace list --json`; while it is listed cleanup FAILs with a
+   `LEFT scratch marketplace registry entry` line. Never without `--scope`: that removes the marketplace from every
+   scope.
 5. For each live recorded agent, newest first: `projmux delete agent uid:<a> -p uid:<proj> --dry-run`. The `--yes`
    delete runs only when that plan exited 0, names the agent, and names no agent the run did not record. A plan naming
    another agent stops cleanup at once (exit 4); a failed plan or delete stops it (exit 1) before any project-wide step.
@@ -324,9 +352,9 @@ order. A rerun picks up from what is left.
    project or an unrecorded agent.
 9. Takes the `after-cleanup` snapshot and compares it with the baseline (FAIL as in Doctor, and this run's install row
    must be gone; no baseline is the FAIL `isolation not checked`). Only when every step passed does it delete
-   `<run>/proj/` (`--keep-proj` keeps it), mark the run `cleaned` and exit 0. On any FAIL the scratch project and its
-   digest key stay, every `LEFT ...` line names what is still there, and it exits 1. `MANIFEST.sha256` is written
-   either way. A run marked `cleaned` returns 0 at once.
+   `<run>/proj/` and `<run>/mkt-src/` (`--keep-proj` keeps both), mark the run `cleaned` and exit 0. On any FAIL
+   the scratch project and its digest key stay, every `LEFT ...` line names what is still there, and it exits 1.
+   `MANIFEST.sha256` is written either way. A run marked `cleaned` returns 0 at once.
 
 After cleanup, prove the evidence survived: `ls "$SMV_RUN/evidence"` and, from that directory,
 `sha256sum -c MANIFEST.sha256`. Run cleanup after every failed launch or journey too. It leaves behind, by design: the
@@ -339,13 +367,14 @@ registry bookkeeping the cleanup snapshot lists as info; name them in the report
 All subcommands take `--run` (default `$SMV_RUN`); `--agent` takes `pm` (default), `role:<role>`, or an agent uid this
 run recorded.
 
-- `"$SMV" launch --scratch-root DIR [--timeout 300]`: create run, project, PM pane; wait for it; the timeout bounds
-  the whole launch.
+- `"$SMV" launch --scratch-root DIR [--timeout 300] [--pm-role]`: create run, project, PM pane; wait for it; the
+  timeout bounds the whole launch. `--pm-role` adds the projmux label `role=pm` the mesh MCP tools need (D82).
 - `"$SMV" doctor [--pre]`: read-only health and isolation check (above).
-- `"$SMV" mkt-project`: declare the marketplace in the scratch project (CLI, project scope); 21 on a conflict.
+- `"$SMV" mkt-project [--commit REF]`: export the commit as the scratch marketplace `smv-<run-id>` and declare it in
+  the scratch project (CLI, project scope); 21 when the scratch name is taken, 2 for a second commit in one run.
 - `"$SMV" scope-pick [--max-moves 6] [--timeout 120]`: after `/plugin install`, highlight the exact project-scope
   option, verify the highlighted line, press Enter.
-- `"$SMV" plugin-check`: assert the project-scope install from this checkout.
+- `"$SMV" plugin-check`: assert the project-scope install of `supervisor-mesh@smv-<run-id>` from the commit export.
 - `"$SMV" send --text "..."` / `"$SMV" wait [...]`: type one line; wait (see Drive).
 - `"$SMV" capture --label L` / `"$SMV" status`: save a capture into `panes/` (the box and footer, or the menu or
   dialog when no box shows; a dead pane's last lines); print the projmux status, the pane report (phase, reason, pane
@@ -387,6 +416,29 @@ run recorded.
   `ls-files`, `rev-parse`) run: no shell and no interpreter. An argument holding `$`, `` ` `` or a leading `~`, or one
   that resolves (against the command's cwd) into the Claude config dir, is refused (exit 2).
 - `"$SMV" note --text T`: append an operator decision to `notes.md`.
+- MCP journey helpers (`features/mcp.md`), each a captured step with PASS/FAIL lines:
+  - `"$SMV" state-check --label L [--item ID --expect-phase P --expect-verbs a,b --expect-evidence-pass]
+    [--baseline L0 --expect-operator-delta N] [--expect-operator-from-pm]`: the scratch `.mesh/` files' sha256 and
+    size, and `state/<L>.json` with selected fields only: per item phase, versions, role, history as
+    `verb:actor:from->to`, attempts (short commits, evidence runs as `kind:status:exit`), pending sends; event counts
+    by type, operator events by id and seq; refusals as `subject:code`. Never a goal, criteria, note, argv, refusal
+    detail or prompt text.
+  - `"$SMV" mesh-config --verify-file REL [--timeout-s 60]`: the operator's hand edit of `.mesh/config.toml` (the PM's
+    file tools are denied there): one `[[verify.commands]]` `test -f REL`, added once.
+  - `"$SMV" mcp-check`: read the `/mcp` dialog on screen (no key pressed): a `supervisor-mesh` line connected, none
+    failed; the capture keeps the matching lines only.
+  - `"$SMV" mcp-calls [--since-last-send] [--expect TOOL[=ok|error|any]] [--all-tools] [--prefix P]`: every
+    supervisor-mesh MCP tool call in the agent's transcript and its result, correlated by tool_use_id; whitelisted
+    inputs and result fields only (ids, phases, codes, plan id, dispatch ref, attempt and evidence runs).
+    `--all-tools` needs a result for every tool the export's `mesh/tools.py` registers.
+  - `"$SMV" mcp-env`: the `mesh/mcp_server.py` process under the agent's pane has `PMX_INTERNAL_ACTIVATION_PANE_UID`,
+    equal to its claude process's and to the recorded pane uid (keyed digests in memory, no value written), its cwd
+    the scratch project, and its script location (installed copy, export, checkout).
+  - `"$SMV" json-shape (--preset agents|agents-kind|panes|marketplaces | --label L [--expect PATH] -- CMD...)`: key
+    paths and value types of one listed read-only JSON command (`projmux get|describe`, `claude plugin [marketplace]
+    list`), never values.
+  - `"$SMV" msg-probe --to A --source B [--times 2] [--expect-deliveries 1]`: one probe text sent N times with one
+    `--message-ref` between two recorded agents; counts the target transcript's user records carrying it.
 - `"$SMV" fake-slack start|say --text T [--user U]|summary|stop`: FakeSlack from `tests/test_slack.py` (see
   `features/slack-setup.md`).
 - `"$SMV" cleanup [--dry-run] [--keep-proj]`: teardown (above).
@@ -420,16 +472,22 @@ lies outside the checkout and the user config dir). An allowed path is compared 
 CLI surface used, each checked with `--help` on the versions above:
 
 - projmux: `version`; `create project --root --name -o uid`; `start project <ref> -o receipt`;
-  `create claude --host tmux --project --cwd --name --label -o uid`; `describe project|agent|pane <ref> -p -o json`;
-  `get agents -p|-A -o json`; `get projects -o json`; `agent status get <ref>`; `agent message status <ref> -o json`;
+  `create claude --host tmux --project --cwd --name --label [--label] -o uid`;
+  `describe project|agent|pane <ref> -p -o json`; `get agents -p|-A -o json`; `get panes -A -o json`;
+  `get projects -o json`; `agent status get <ref>`; `agent message status <ref> -o json`;
+  `agent message send <ref> --source <ref> --message-ref <ref> -- <text>` (msg-probe);
   `focus pane uid:<uid> -p` (printed for the operator, never run); `delete agent <ref> -p --dry-run|--yes`;
   `stop project <ref> -o receipt`; `unregister project <ref> --dry-run|--yes`.
 - claude: `--version`; `plugin --help`; `plugin list --json`; `plugin marketplace list --json`;
+  (the marketplace add / remove below always name the scratch export / `smv-<run-id>`, never `supervisor-mesh`)
   `plugin marketplace add <source> --scope project --json`; `plugin marketplace remove <name> --scope project --json`;
   `plugin uninstall <plugin> --scope project --keep-data`.
 - tmux: `-V`; `-S <socket>|-L projmux`; `capture-pane -p -J -t -S -3000`; `send-keys -t [-l]`;
-  `display-message -p -t <pane> '#{pane_dead} #{pane_dead_status}'`.
-- git: `init -q`; `-C <repo> rev-parse HEAD`; `-C <repo> status --porcelain=v1 -z -uall --ignored=matching`.
+  `display-message -p -t <pane> '#{pane_dead} #{pane_dead_status}'`; `display-message -p -t <pane> '#{pane_pid}'`.
+- git: `init -q`; `-C <repo> rev-parse HEAD`; `-C <repo> status --porcelain=v1 -z -uall --ignored=matching`;
+  `-C <repo> rev-parse --verify --quiet --end-of-options <ref>^{commit}`; `rev-parse --show-object-format`;
+  `archive --format=tar -o <file> <sha>`; `ls-tree -r -z --full-tree <sha>`; `cat-file blob <oid>`.
+- tar: `-x -f <file> -C <dir>`.
 
 ## Gotchas
 
@@ -488,8 +546,15 @@ CLI surface used, each checked with `--help` on the versions above:
 - The slash `/plugin marketplace add` path is NOT exercised: it writes the marketplace declaration to user settings
   (`~/.claude/settings.json`), which a run must never change. The run declares the marketplace with
   `claude plugin marketplace add <checkout> --scope project` instead; name that one step as a stand-in in the report.
-- The README's default `marketplace add` from GitHub is not exercised (the repo is private); the run adds the local
-  checkout path.
+- The README's default `marketplace add` from GitHub is not exercised; the run adds a local export of one commit,
+  under the scratch name `smv-<run-id>`.
+- The scratch-name design (2026-11-18) is proven offline only (`tests/test_marketplace.py`, where the stub claude
+  models the by-name registry rewrite). Not yet seen live: that `claude plugin marketplace remove smv-<run-id> --scope
+  project` also drops the registry entry once no scope declares it (cleanup FAILs with a `LEFT` line if it does not;
+  then ask the operator, never remove without `--scope`); and that the MCP tool prefix stays
+  `mcp__plugin_supervisor-mesh_supervisor-mesh__` under another marketplace name (`features/mcp.md` check (e)).
+- The MCP helpers' inputs (`/mcp` screens, MCP tool_use / tool_result records, `/proc`) are synthetic in
+  `tests/test_mcp.py`; replace them with redacted live captures after the first live run.
 - `scope-pick` matches the option text exactly. If Claude Code rewords the scope menu, it stops with 12 by design;
   update `SCOPE_OPTION` in `bin/smv_screen.py` only after reading the new capture (and add it to `tests/fixtures/`).
 - A project-scope declaration and install write bookkeeping into the user plugin registry files (install rows, refresh
@@ -508,7 +573,7 @@ CLI surface used, each checked with `--help` on the versions above:
   key names of the user config files (for example the plugin ids under `installed_plugins.json`), never values.
 - The process scan in cleanup needs `/proc` (Linux and WSL). Elsewhere it says so, and the operator checks by hand.
 - Plugin root with a local-directory marketplace: the installed plugin's skills can run scripts from the source
-  checkout (run #4: the PM ran `python3 <checkout>/skills/init/scaffold.py`). `plugin-check` proves the installed
-  copy is byte-identical to the checkout, but a live run does not prove that the installed copy itself executes.
-  `init-check` records which `scaffold.py` path the transcript shows; report it. Only a GitHub-source install would
-  close this gap.
+  directory (run #4: the PM ran `python3 <checkout>/skills/init/scaffold.py`; the source is now the commit export).
+  `plugin-check` proves the installed copy is byte-identical to the export, but a live run does not prove that the
+  installed copy itself executes. `init-check` records which `scaffold.py` path the transcript shows (commit export,
+  installed copy, checkout); `mcp-env` records where `mesh/mcp_server.py` runs from. Report both.

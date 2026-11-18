@@ -186,6 +186,7 @@ class Caller:
     kind: CallerKind
     role: str | None = None  # LEAD: its role label
     agent_uid: str | None = None  # recorded in history; never echoed in public refusal text
+    why: str | None = None  # UNKNOWN only: what the operator can do about it (D108, D109); fixed text, no values
 
     @staticmethod
     def pm(agent_uid: str | None = None) -> "Caller":
@@ -196,8 +197,8 @@ class Caller:
         return Caller(CallerKind.LEAD, role, agent_uid)
 
     @staticmethod
-    def unknown() -> "Caller":
-        return Caller(CallerKind.UNKNOWN)
+    def unknown(why: str | None = None) -> "Caller":
+        return Caller(CallerKind.UNKNOWN, why=why)
 
     @staticmethod
     def mesh() -> "Caller":
@@ -405,6 +406,9 @@ class RefusalCode(StrEnum):
     TARGET_INVALID = "target_invalid"
     EVENT_NOT_BOUND = "event_not_bound"  # D85: the event neither names the command nor approves the proposal
     PANE_NOT_IDLE = "pane_not_idle"
+    CONFIRM_FAILED = "confirm_failed"  # D113: no, a wrong or a late out-of-band confirmation code
+    RE_PIN_REFUSED = "re_pin_refused"  # D114: the pinned PM is still Running, or no re-pin event backs the call
+    OUTSIDE_ROOT = "outside_root"  # D111: a mesh_init / tracker write resolves outside the project root
 
 
 # ---------------------------------------------------------------- records (section 3)
@@ -629,8 +633,8 @@ class EventUse:
     pane_command or companions_install."""
 
     event_id: str
-    kind: Literal["reply", "override", "pane_command", "companions_install"]
-    ref: str  # the item id (reply, override) | the target agent uid (pane_command) | the plan (companions_install)
+    kind: Literal["reply", "override", "pane_command", "companions_install", "re_pin"]
+    ref: str  # the item id (reply, override) | the target agent uid (pane_command, re_pin) | the plan (companions)
     at_seq: int
     status: Literal["attempting", "done", "aborted", "unknown"] | None = None  # pane_command keypress protocol
 
@@ -646,6 +650,16 @@ class Proposal:
     command: str
     by_uid: str | None
     used: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RePin:
+    """D109/D114: a hook-recorded `re-pin <uid>` prompt from an unpinned role=pm pane, waiting for that PM's
+    mesh_init apply (which checks D114 and the D113 code, then moves the pin). Never a pin by itself."""
+
+    event_id: str
+    agent_uid: str
+    session: str
 
 
 SCHEMA_VERSION = 1
@@ -668,6 +682,27 @@ class Doc:
     # str(seq) -> sha256 of the operator event record, written under the lock in the SAME commit that takes the seq:
     # events.jsonl is append-only but not trusted on its own (a line appended or edited by anyone else matches no hash)
     operator_event_sha256: Mapping[str, str] = field(default_factory=dict)
+    # D109: the PM agent uid mesh_init apply pinned; only that uid acts as the PM. D110: the PM's Claude session (the
+    # first hook-proven prompt pins it; a re-pin moves both). `transcript_entries`: sha256(session:uuid) of every
+    # transcript entry that backed an event -> its seq (one event per entry; never the uuid, the text or the path)
+    pm_uid: str | None = None
+    pm_session: str | None = None
+    transcript_entries: Mapping[str, int] = field(default_factory=dict)
+    pm_repin: RePin | None = None
+
+    def override_errors(self) -> list[str]:
+        """D112 (F6): an item whose current evidence is an operator override needs the override use of an operator
+        event for that item, recorded at or before the evidence (a hand-made override has none)."""
+        bad = []
+        for item_id, item in self.items.items():
+            attempt = item.current_attempt
+            ev = attempt.evidence if attempt else None
+            if ev is None or ev.kind is not EvidenceKind.OVERRIDE:
+                continue
+            uses = self.event_uses.values()
+            if not any(u.kind == "override" and u.ref == item_id and u.at_seq <= ev.recorded_seq for u in uses):
+                bad.append(f"{item_id}: override evidence without a matching operator event use")
+        return bad
 
     def dep_status(self, item_id: str) -> DepStatus:
         """One answer for 'is this dependency satisfied' over items AND legacy rows (invariant 8)."""
@@ -788,6 +823,7 @@ class Config:
     dispatch_retry: int = 3  # D93: resends of a transiently refused order (same message-ref)
     dispatch_backoff_s: float = 1.0  # D93: the first wait, doubled per attempt
     stall_minutes: int = 15  # D102: no lead activity on a running / verifying item for this long is a stall
+    confirm_timeout_s: int = 120  # D113: how long the operator has to type the popup's code
 
     def verify_hash(self) -> str:
         """sha256 over the canonical JSON of the evidence-relevant inputs (D47). Limits do not change it; an empty

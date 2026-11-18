@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, parse_caller
+from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload
 from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
@@ -219,12 +219,12 @@ class F2cForgedEventTests(Case):
         self.assertIsNone(self.store.get_event("ev-000002"))
         self.assertEqual([e.id for e in self.store.operator_events()], ["ev-000001"])
 
-    def test_an_appended_line_reusing_a_seq_is_refused_and_so_is_the_seq_it_shadows(self):
+    def test_an_appended_line_reusing_a_seq_is_refused_and_the_genuine_event_stays(self):
         ev = self.store.record_operator_event("run /config", AT, "pm-uid")
         self.forge(id="ev-000099", seq=1)
         self.assertIsNone(self.store.get_event("ev-000099"))  # id is not ev-{seq:06d}
-        self.assertIsNone(self.store.get_event(ev.id))  # two lines carry seq 1: neither is trusted
-        self.assertEqual(self.store.operator_events(), [])
+        self.assertEqual(self.store.get_event(ev.id), ev)  # D112 (F7): a forged copy no longer hides the genuine line
+        self.assertEqual(self.store.operator_events(), [ev])
 
     def test_a_line_whose_text_was_rewritten_is_refused(self):
         self.store.record_operator_event("hello", AT, "pm-uid")
@@ -255,6 +255,11 @@ class F2dHookPayloadTests(Case):
         self.store.create()
 
     def hook(self, payload):
+        if self.store.read().doc.pm_uid is None:
+            pin_pm(self.store)  # D109
+        if payload.get("hook_event_name") == "UserPromptSubmit" and isinstance(payload.get("prompt"), str):
+            if isinstance(payload.get("session_id"), str) and payload["session_id"]:  # D110: a real user prompt
+                payload = {**payload, **prompt_payload(self.home, self.root, payload["prompt"], payload["session_id"])}
         out = self.cli(
             "event",
             "record",
@@ -854,14 +859,15 @@ class F19SizeBoundTests(InProcess):
         self.assertEqual(schema["properties"]["goal"]["maxLength"], MAX_TEXT)
         self.assertEqual(schema["properties"]["done_criteria"]["maxItems"], MAX_CRITERIA)
 
-    def test_an_order_too_large_for_one_argv_is_refused_before_anything_is_recorded(self):
+    def test_a_message_over_the_projmux_limit_is_refused_before_anything_is_recorded(self):
         from mesh import dispatch
         from mesh.model import Scope
 
-        big = Scope(read_set=tuple(f"docs/{'r' * 900}/{n}.md" for n in range(200)))
+        big = Scope(work_order="docs/" + "w" * 2000 + ".md", report="docs/" + "r" * 2000 + ".md")
         self.seed(item_in(Phase.READY, contract=contract(version=1, scope=big)))
         self.fakes.agent("be-uid", "backend", self.root)
-        self.assertGreater(len(dispatch.compose(self.store.read().doc.items["WO-0001"], self.root)), dispatch.MAX_ORDER)
+        text = dispatch.compose(self.store.read().doc.items["WO-0001"], self.root, "mesh-WO-0001-d1")
+        self.assertGreater(len(text.encode("utf-8")), dispatch.MAX_MESSAGE)
         out = tools.call(self.ctx(), "work_dispatch", {"item_id": "WO-0001"})
         self.assertEqual(out.data["error"]["code"], "invalid_args")
         self.assertEqual(self.store.read().doc.items["WO-0001"].pending_actions, ())
@@ -874,11 +880,11 @@ class F12WorkOrderReachesTheLeadTests(unittest.TestCase):
         from mesh.model import Scope
 
         item = item_in(Phase.READY, contract=contract(version=1))
-        text = dispatch.compose(item, Path("/work/proj"))
-        self.assertIn("Work order: /work/proj/docs/work-orders/WO-0001.md (read it first)", text)
+        text = dispatch.compose(item, Path("/work/proj"), "mesh-WO-0001-d1")
+        self.assertIn("Work order: /work/proj/docs/work-orders/WO-0001.md (read it first", text)
         named = item_in(Phase.READY, contract=contract(version=1, scope=Scope(work_order="plans/wo-1.md")))
         self.assertIn(
-            "Work order: /work/proj/plans/wo-1.md (read it first)", dispatch.compose(named, Path("/work/proj"))
+            "Work order: /work/proj/plans/wo-1.md (read it first", dispatch.compose(named, Path("/work/proj"), "r")
         )
 
     def test_the_run_skill_puts_the_read_set_report_and_work_order_into_the_item(self):

@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes
+from _mesh_fakes import Fakes, pin_pm
 from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
@@ -47,7 +47,7 @@ class Server:
     def __init__(
         self,
         project: Path,
-        caller: str | None = "pm",
+        caller: str | None = "pm:pm-uid",  # the pinned PM (D109)
         cwd: Path | None = None,
         fakes: Fakes | None = None,
         extra_env: dict | None = None,
@@ -110,7 +110,7 @@ class McpCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.project = Path(self.tmp.name)
         self.store = Store(self.project / ".mesh")
-        self.store.create()
+        pin_pm(self.store)  # D109: as mesh_init apply leaves it
         self.servers = []
         self.fakes = Fakes(Path(self.tmp.name) / ".fakes")
 
@@ -395,7 +395,7 @@ class RecoveryOnStartTests(McpCase):
         from mesh.model import ActionKind, EventUse, PendingAction
 
         item = item_in(Phase.READY, contract=contract(version=1))
-        sha = dispatch.text_sha256(dispatch.compose(item, self.project))
+        sha = dispatch.text_sha256(dispatch.compose(item, self.project, "mesh-WO-0001-d1"))
         send = PendingAction(
             "WO-0001-d1",
             ActionKind.DISPATCH_SEND,

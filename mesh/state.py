@@ -368,7 +368,8 @@ def _refuse(
 def _resolve(doc: Doc, req: Request) -> tuple[Row, Item | None] | Refused:
     """Which row applies to this request, or why none does. Refuses: unknown caller, unknown item, not in the table."""
     if req.caller.kind is CallerKind.UNKNOWN:
-        return _refuse(req, RefusalCode.UNKNOWN_CALLER, "the caller has no role label (D82): no verbs")
+        why = req.caller.why or "the caller has no role label (D82)"
+        return _refuse(req, RefusalCode.UNKNOWN_CALLER, f"{why}: no verbs")
     item = doc.items.get(req.item_id or "")
     if req.verb is not Verb.NEW and item is None:
         return _refuse(req, RefusalCode.UNKNOWN_ITEM, f"no item {req.item_id!r}")
@@ -835,6 +836,9 @@ def ready(c: Ctx) -> Doc:
 def _next_action_id(item: Item, letter: str) -> str:
     n = sum(1 for a in item.pending_actions if a.action_id.startswith(f"{item.id}-{letter}")) + 1
     return f"{item.id}-{letter}{n}"
+
+
+next_action_id = _next_action_id  # the dispatch message names its message-ref before the verb records it
 
 
 @guard(RefusalCode.ROLE_HAS_NO_LEAD)

@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from _helpers import ROOT
-from _mesh_fakes import Fakes, parse_caller
+from _mesh_fakes import Fakes, parse_caller, pin_pm, prompt_payload
 from test_mesh_pane import PaneCase
 from test_mesh_state import (
     BACKEND,
@@ -58,6 +58,18 @@ CLI = ROOT / "mesh" / "cli.py"
 
 MESH = ROOT / "mesh"
 LAYER_FILE = "layers.py"
+# D96 narrowed by D107 (spec line 28): the hook command and the three mesh-owned files; .mesh/config.toml stays editable
+NARROWED_DENY = (
+    "Bash(*mesh* event record*)",
+    "Bash(*tmux*send-keys*)",  # D113: advisory, the models do not type into panes
+    "Bash(*tmux*paste-buffer*)",
+    "Write(.mesh/state.json)",
+    "Edit(.mesh/state.json)",
+    "Write(.mesh/events.jsonl)",
+    "Edit(.mesh/events.jsonl)",
+    "Write(.mesh/refusals.jsonl)",
+    "Edit(.mesh/refusals.jsonl)",
+)
 
 
 def _calls(tree: ast.AST) -> list[tuple[str, int]]:
@@ -347,7 +359,9 @@ class D96HookParentCheckTests(unittest.TestCase):
         self.fakes.agent("pm-uid", "pm", self.root, pane="pane-pm", claude_pid=claude_pid)
         base = {k: v for k, v in os.environ.items() if not k.startswith(("MESH_", "CLAUDE_", "PMX_"))}
         base.update(CLAUDE_PROJECT_DIR=str(self.root), PMX_INTERNAL_ACTIVATION_PANE_UID="pane-pm")
-        payload = json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "run /config"})
+        pin_pm(self.store)  # D109
+        base["HOME"] = str(self.tmp)
+        payload = json.dumps(prompt_payload(self.tmp, self.root, "run /config"))  # D110
         out = subprocess.run(
             [sys.executable, str(CLI), "event", "record", "--source", "terminal"],
             input=payload,
@@ -405,17 +419,51 @@ class D96HostDenyRulesTests(unittest.TestCase):
         perms = json.loads(self.settings.read_text())["permissions"]
         self.assertEqual((perms["allow"], perms["defaultMode"]), (["Bash(ls:*)"], "plan"))
         self.assertEqual(perms["deny"], ["Bash(rm -rf:*)", *init.DENY_RULES])
-        self.assertIn("Bash(*mesh* event record*)", init.DENY_RULES)
-        self.assertIn("Write(.mesh/**)", init.DENY_RULES)
-        self.assertIn("Edit(.mesh/**)", init.DENY_RULES)
+        self.assertEqual(init.DENY_RULES, NARROWED_DENY)
         self.apply()
-        self.assertEqual(json.loads(self.settings.read_text())["permissions"]["deny"].count("Write(.mesh/**)"), 1)
+        deny = json.loads(self.settings.read_text())["permissions"]["deny"]
+        self.assertEqual(deny.count("Write(.mesh/state.json)"), 1)
 
     def test_a_fresh_settings_file_gets_the_hook_and_the_deny_rules(self):
         self.apply()
         data = json.loads(self.settings.read_text())
-        self.assertEqual(data["permissions"]["deny"], list(init.DENY_RULES))
+        self.assertEqual(data["permissions"]["deny"], list(NARROWED_DENY))
+        self.assertFalse([r for r in data["permissions"]["deny"] if ".mesh/**" in r])
+        self.assertFalse([r for r in data["permissions"]["deny"] if "config.toml" in r])  # D107: config stays editable
         self.assertEqual(data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], init.HOOK_COMMAND)
+
+    def test_d107_the_old_mesh_wildcards_are_replaced_by_the_narrowed_rules(self):
+        self.settings.parent.mkdir()
+        deny = [
+            "Bash(rm -rf:*)",
+            "Bash(*mesh* event record*)",
+            "Write(.mesh/**)",
+            "Read(./secrets/**)",
+            "Edit(.mesh/**)",
+        ]
+        mine = {"permissions": {"allow": ["Bash(ls:*)"], "deny": deny}}
+        self.settings.write_text(json.dumps(mine, indent=2) + "\n")
+        self.apply()
+        got = json.loads(self.settings.read_text())["permissions"]["deny"]
+        self.assertFalse([r for r in got if ".mesh/**" in r], got)
+        for rule in NARROWED_DENY:
+            self.assertEqual(got.count(rule), 1, (rule, got))
+        users = [r for r in got if r not in NARROWED_DENY]
+        self.assertEqual(users, ["Bash(rm -rf:*)", "Read(./secrets/**)"])  # kept, in their order
+        want = ["Bash(rm -rf:*)", "Bash(*mesh* event record*)", "Read(./secrets/**)", *NARROWED_DENY[1:]]
+        self.assertEqual(got, want)
+        first = self.settings.read_bytes()
+        self.apply()
+        self.assertEqual(self.settings.read_bytes(), first)  # a second re-run changes nothing
+
+    def test_d107_a_user_written_narrower_mesh_rule_is_left_alone(self):
+        self.settings.parent.mkdir()
+        mine = {"permissions": {"deny": ["Write(.mesh/runs/**)", "Edit(.mesh/state.json)"]}}
+        self.settings.write_text(json.dumps(mine))
+        self.apply()
+        got = json.loads(self.settings.read_text())["permissions"]["deny"]
+        self.assertEqual(got[:2], ["Write(.mesh/runs/**)", "Edit(.mesh/state.json)"])
+        self.assertEqual(sorted(got), sorted(["Write(.mesh/runs/**)", *NARROWED_DENY]))
 
     def test_an_existing_mesh_hook_with_an_old_command_is_refreshed(self):
         self.settings.parent.mkdir()
@@ -517,9 +565,11 @@ class D92FailIfOutputTests(FactsCase):
         line = layers.output_failure(["boom"], "boom at /etc/secret/file.txt and ~/x", "", "/tmp/wt")
         self.assertEqual(line, "boom at <path> and ~/x")
 
-    def test_a_bad_regex_is_a_config_error(self):
+    def test_d115_an_entry_is_a_literal_and_a_non_string_is_a_config_error(self):
+        cfg = store.parse_config(toml_commands(py("pass")) + 'fail_if_output = ["("]\n')  # no regex to compile
+        self.assertEqual(cfg.verify_commands[0].fail_if_output, ("(",))
         with self.assertRaises(Exception) as cm:
-            store.parse_config(toml_commands(py("pass")) + 'fail_if_output = ["("]\n')
+            store.parse_config(toml_commands(py("pass")) + "fail_if_output = [1]\n")
         self.assertIn("fail_if_output", str(cm.exception))
 
     def test_the_ts_defaults_are_data_applied_by_mesh_init_for_stack_ts(self):

@@ -40,12 +40,16 @@ class Case(unittest.TestCase):
         self.fakes = Fakes(self.tmp / "fakes")
         self.store = Store(self.root / ".mesh")
         self.store.create()
+        # D113: the PM pane's tmux client shows the confirmation popup; the fake operator types the code back
+        self.fakes.agent("pm-uid", "pm", self.root, pane="pane-pm", tmux_id="%9")
+        self.fakes.set(popup="right")
 
     def tearDown(self):
         self._tmp.cleanup()
 
     def call(self, name, args=None, caller="pm:pm-uid"):
-        env = self.fakes.env({"PATH": "/usr/bin:/bin", "HOME": str(self.home)})
+        base = {"PATH": "/usr/bin:/bin", "HOME": str(self.home), "PMX_INTERNAL_ACTIVATION_PANE_UID": "pane-pm"}
+        env = self.fakes.env(base)
         who = parse_caller(caller)
         ctx = tools.Context.for_project(self.root, env, clock=lambda: "2026-11-18T00:00:00Z", caller=lambda: who)
         return tools.call(ctx, name, args or {})

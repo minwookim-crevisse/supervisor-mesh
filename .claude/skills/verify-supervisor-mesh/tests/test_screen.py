@@ -112,16 +112,17 @@ class ScopePickDrive(unittest.TestCase):
         pane["on_enter"] = ["screen:menu", "submit-screen:main"]
         pane["on_key"] = {"Down": ["screen:after_down"]}
         e.save()
-        r = e.smv("send", "--text", m.INSTALL_LINE)
+        line = f"/plugin install {e.plugin_id}"
+        r = e.smv("send", "--text", line)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = e.smv("wait", "--timeout", "20", "--poll", "0.2")
         self.assertEqual(r.returncode, 12, r.stdout + r.stderr)
         r = e.smv("scope-pick", "--timeout", "20")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(e.keys_sent(), [["-l", m.INSTALL_LINE], ["Enter"], ["Down"], ["Enter"]])
+        self.assertEqual(e.keys_sent(), [["-l", line], ["Enter"], ["Down"], ["Enter"]])
         log = (e.run_root / "evidence/sends.log").read_text()
         self.assertEqual([x.split("\t")[3] for x in log.splitlines()],
-                         [f"TYPE {m.INSTALL_LINE}", "KEY Enter", "KEY Down", "KEY Enter"])
+                         [f"TYPE {line}", "KEY Enter", "KEY Down", "KEY Enter"])
         self.assertEqual(e.run_json()["scope_pick"]["result"], "ENTER")
 
 

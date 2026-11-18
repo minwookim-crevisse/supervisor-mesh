@@ -41,6 +41,15 @@ def arg_after(args: list[str], flag: str) -> str | None:
     return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
 
 
+def registry(change) -> None:
+    """The user registry file Claude keeps by marketplace name ($CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json):
+    `change(data)` edits it in place, as add / remove / a refresh would."""
+    path = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins/known_marketplaces.json"
+    data = json.loads(path.read_text()) if path.is_file() else {}
+    change(data)
+    path.write_text(json.dumps(data))
+
+
 def claude(st: dict, args: list[str]):
     if args == ["--version"]:
         out("2.1.307 (Claude Code)")
@@ -54,19 +63,27 @@ def claude(st: dict, args: list[str]):
     settings = cwd / ".claude/settings.json"
     data = json.loads(settings.read_text()) if settings.is_file() else {}
     if args[:3] == ["plugin", "marketplace", "add"]:
-        data.setdefault("extraKnownMarketplaces", {})["supervisor-mesh"] = {
-            "source": {"source": "directory", "path": args[3]}}
+        # the name comes from the source's own manifest, and the registry is keyed by name: adding a name that is
+        # already registered REWRITES that entry's source (the live finding: a project-scope add of 'supervisor-mesh'
+        # re-pointed the user's GitHub entry)
+        manifest = Path(args[3]) / ".claude-plugin/marketplace.json"
+        name = json.loads(manifest.read_text())["name"] if manifest.is_file() else "supervisor-mesh"
+        data.setdefault("extraKnownMarketplaces", {})[name] = {"source": {"source": "directory", "path": args[3]}}
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps(data, indent=1))
-        if not any(m.get("name") == "supervisor-mesh" for m in st.setdefault("marketplaces", [])):
-            st["marketplaces"].append({"name": "supervisor-mesh", "source": "directory", "path": args[3]})
+        st["marketplaces"] = [m for m in st.setdefault("marketplaces", []) if m.get("name") != name]
+        st["marketplaces"].append({"name": name, "source": "directory", "path": args[3]})
+        registry(lambda d: d.__setitem__(name, {"source": {"source": "directory", "path": args[3]},
+                                                "installLocation": args[3], "lastUpdated": "t1"}))
         save(st)
         out({"ok": True})
     if args[:3] == ["plugin", "marketplace", "remove"]:
         (data.get("extraKnownMarketplaces") or {}).pop(args[3], None)
         if settings.is_file():
             settings.write_text(json.dumps(data, indent=1))
-        st["marketplaces"] = [m for m in st.get("marketplaces", []) if m.get("name") != args[3]]
+        if not st.get("remove_keeps_registry"):  # scripted: the registry entry outlives the declaration
+            st["marketplaces"] = [m for m in st.get("marketplaces", []) if m.get("name") != args[3]]
+            registry(lambda d: d.pop(args[3], None))
         save(st)
         out({"ok": True})
     if args[:2] == ["plugin", "uninstall"]:
@@ -85,6 +102,8 @@ def tmux(st: dict, args: list[str]):
     target = arg_after(args, "-t")
     pane = (st.get("tmux") or {}).get(target)
     if "display-message" in args:
+        if pane and "#{pane_pid}" in args:
+            out(str(pane.get("pid", "")))
         out(pane.get("dead", "0 0")) if pane else out("can't find pane", 1)
     if pane is None:
         out(f"can't find pane: {target}", 1)
@@ -140,6 +159,24 @@ def projmux(st: dict, args: list[str]):
     if args[:3] == ["agent", "status", "get"]:
         line = (st.get("status") or {}).get(args[3][4:] if args[3].startswith("uid:") else args[3])
         out(line) if line else out("", 1)
+    if args[:3] == ["agent", "message", "send"]:
+        # a delivered message lands in the target's transcript as a user record; with `dedup` (the default) a
+        # message-ref seen before is not delivered again
+        ref, target = arg_after(args, "--message-ref"), args[3][4:]
+        seen = st.setdefault("message_refs", [])
+        if ref in seen and st.get("dedup", True):
+            out(f"{ref}\tduplicate\talready-delivered")
+        seen.append(ref)
+        agent = next((x for x in live if x["metadata"]["uid"] == target), None)
+        tpath = ((agent or {}).get("status", {}).get("sessionRef", {}).get("claude") or {}).get("transcriptPath")
+        if tpath:
+            with open(tpath, "a") as f:
+                f.write(json.dumps({"type": "user", "timestamp": st.get("now", "2099-01-01T00:00:00.000Z"),
+                                    "message": {"role": "user", "content": args[args.index("--") + 1]}}) + "\n")
+        save(st)
+        out(f"{ref}\tdelivered\t-")
+    if verb == ["get", "panes"]:
+        out({"items": st.get("pane_items", [])})
     if args[:3] == ["agent", "message", "status"]:
         out({"ref": args[3], "status": "delivered"})
     if verb == ["delete", "agent"]:

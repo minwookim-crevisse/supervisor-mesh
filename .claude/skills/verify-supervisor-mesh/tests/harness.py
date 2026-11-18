@@ -19,7 +19,10 @@ SKILL = TESTS.parent
 CHECKOUT = SKILL.parents[2]
 SMV = Path(os.environ.get("SMV_UNDER_TEST") or SKILL / "bin/smv.py").resolve()
 RULE = "─" * 60
-PLUGIN_ID = "supervisor-mesh@supervisor-mesh"
+MESH_TOOLS = ("mesh_init", "mesh_status", "mesh_metrics", "work_list", "work_show", "work_new",
+              "work_dispatch", "work_transition", "tracker_render", "pane_command", "companions_install")
+GUARD = "supervisor-mesh"  # the user-level marketplace name a run must never touch
+GUARD_ROW = {"name": GUARD, "source": "github", "repo": "example/supervisor-mesh", "installLocation": "x"}
 
 
 def load_smv():
@@ -86,6 +89,11 @@ class Env:
             self.cfg / "CLAUDE.md": f"# global rules\n- {self.marker['CLAUDEMD']}\n- contact {self.email}\n",
             self.lead / "scripts/scrub.sh": (CHECKOUT / "scripts/scrub.sh").read_text(),
             self.lead / ".claude-plugin/plugin.json": json.dumps({"name": "supervisor-mesh", "version": version}),
+            self.lead / ".claude-plugin/marketplace.json": json.dumps(
+                {"name": GUARD, "owner": {"name": "t"}, "plugins": [{"name": "supervisor-mesh", "source": "./"}]},
+                indent=2) + "\n",
+            self.lead / "mesh/tools.py": "".join(f'@tool(\n    "{t}",\n    "d",\n)\n' for t in MESH_TOOLS),
+            self.lead / ".mcp.json": json.dumps({"mcpServers": {"supervisor-mesh": {"command": "python3"}}}),
             self.lead / "skills/init/scaffold.py": "# test placeholder\n",
             self.lead / ".gitignore": ".env\n__pycache__/\n",
         }
@@ -105,10 +113,26 @@ class Env:
                     "GIT_CONFIG_NOSYSTEM": "1"}
         self.env.pop("SMV_RUN", None)
         subprocess.run(["git", "init", "-q", str(self.lead)], env=self.env, check=True)
+        self.git_lead("add", "-A")
+        self.git_lead("commit", "-q", "-m", "lead fixture")
         self.state = {"project": None, "registered": False, "agents": [], "deleted": [], "status": {}, "panes": {},
                       "tmux": {}, "plugin_rows": [], "marketplaces": [], "fail": {}}
         self.save()
         self.run_root = None
+
+    def git_lead(self, *args: str) -> str:
+        """git in the fake lead repo, with a throwaway identity (no global config exists under the fake HOME)."""
+        return subprocess.run(["git", "-C", str(self.lead), "-c", "user.name=smv-test", "-c", "user.email=smv-test",
+                               "-c", "commit.gpgsign=false", *args], env=self.env, check=True, text=True,
+                              capture_output=True).stdout
+
+    @property
+    def mkt_name(self) -> str:
+        return f"smv-run-{self.rand}"  # smv.scratch_name of the run id make_run uses
+
+    @property
+    def plugin_id(self) -> str:
+        return f"supervisor-mesh@{self.mkt_name}"
 
     # -- stub state
     def save(self) -> None:

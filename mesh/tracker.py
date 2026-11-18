@@ -21,7 +21,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .model import Doc, InvalidArgs, LegacyRow
+from . import layers
+from .model import Doc, InvalidArgs, LegacyRow, MeshError
 
 __all__ = ["BEGIN", "END", "InvalidArgs", "Preview", "Rendered", "parse_legacy", "render_region", "render_file"]
 
@@ -240,7 +241,16 @@ def _write(path: Path, text: str) -> None:
         raise
 
 
+class OutsideRoot(MeshError):  # noqa: N818
+    code = "outside_root"
+
+
 def render_file(root: Path, doc: Doc, dry_run: bool = False) -> Rendered:
+    """D111: refused (OutsideRoot, nothing written, the dry run included) when docs/tracker.md or the .mesh/ backup
+    resolves outside the project root."""
+    for rel in (str(TRACKER), ".mesh/tracker-original.md"):
+        if not layers.contained(Path(root), rel):
+            raise OutsideRoot(f"{rel} resolves outside the project root (a symlink): refused (D111)")
     path = Path(root) / TRACKER
     region = render_region(doc)
     try:

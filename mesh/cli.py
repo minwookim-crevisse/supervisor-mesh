@@ -10,12 +10,15 @@ Options are derived from each tool's args dataclass: a boolean is a flag, a stri
 anything structured (lists, objects) is JSON. `--json` supplies the whole argument object; explicit options win.
 
 `event record` reads the hook's JSON from stdin and records the prompt as an operator event ONLY when the payload is a
-UserPromptSubmit event with a session id, the prompt is not a projmux coordination envelope (a peer message), and the
-caller is the PM (projmux label role=pm, this project's cwd: the same identity rule as the MCP server, D82) and the
-PM pane's claude process (projmux `status.activation.claude.process.pid`) is an ancestor of this process (D96: a lead
-that sets the PM's pane uid in its environment is not run by the PM's claude; fail closed, `hook_error`
-`parent_not_pm_claude`). Anything else records nothing. It prints nothing (a UserPromptSubmit hook's stdout would join
-the prompt) and exits 0 on every error, leaving a `hook_error` line in .mesh/events.jsonl when .mesh/ exists.
+UserPromptSubmit event with a session id, the prompt is not a projmux coordination envelope (a peer message), the
+caller is a role=pm pane of this project (D82) whose claude process is an ancestor of this process (D96, hook_error
+`parent_not_pm_claude`), exactly one live role=pm agent exists (D109, `pm_ambiguous`), the agent is the pinned PM
+(`pm_not_pinned`, `not_pinned_pm`) and the session the PM session (`session_not_pm`; the first proven prompt pins it),
+and the prompt equals the LATEST real user prompt of the hook's transcript, an entry not used before (D110,
+`transcript_refused`, `prompt_not_in_transcript`, `transcript_entry_reused`). A `re-pin <own agent uid>` prompt from a
+role=pm pane is recorded as a pending re-pin instead (D114: mesh_init apply decides; `re_pin_not_self` when it names
+another uid). Anything else records nothing. It prints nothing (a UserPromptSubmit hook's stdout would join the
+prompt) and exits 0 on every error, leaving a `hook_error` line (a fixed code, never a value) in .mesh/events.jsonl.
 
 The project root is `CLAUDE_PROJECT_DIR` when set, else the working directory.
 """
@@ -32,7 +35,7 @@ import os  # noqa: E402
 import re  # noqa: E402
 import types  # noqa: E402
 import typing  # noqa: E402
-from dataclasses import MISSING, fields  # noqa: E402
+from dataclasses import MISSING, fields, replace  # noqa: E402
 from enum import Enum  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -40,9 +43,9 @@ if __name__ == "__main__":
     sys.path[0] = str(Path(__file__).resolve().parents[1])  # the plugin root, not mesh/
 
 from mesh import identity, layers, tools  # noqa: E402
-from mesh.model import CallerKind  # noqa: E402
+from mesh.model import CallerKind, RePin  # noqa: E402
 from mesh.projmux import Projmux  # noqa: E402
-from mesh.store import Store  # noqa: E402
+from mesh.store import HookRefused, Store  # noqa: E402
 
 
 def _root(env) -> Path:
@@ -63,14 +66,14 @@ def _plain(tp) -> str:
 
 def _json_arg(text: str):
     try:
-        return json.loads(text)
+        return layers.parse_json(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not JSON: {text[:40]!r}") from None
 
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="mesh", description="supervisor-mesh CLI (the MCP tools, plus the event hook)")
-    sub = ap.add_subparsers(dest="command", required=True, metavar="<command>")
+    sub = ap.add_subparsers(dest="_tool", required=True, metavar="<command>")  # F5: not a field name (`command`)
     for t in tools.REGISTRY.values():
         sp = sub.add_parser(t.name, help=t.description.split(". ")[0], description=t.description)
         sp.add_argument("--json", type=_json_arg, default=None, help="the whole argument object as JSON")
@@ -123,7 +126,7 @@ def is_coordination_envelope(prompt: str) -> bool:
     if _ENVELOPE_START.match(text):
         return True
     try:
-        data = json.loads(text)
+        data = layers.parse_json(text)
     except ValueError:
         return False
     return isinstance(data, dict) and data.get("kind") == COORDINATION_KIND
@@ -146,6 +149,27 @@ def operator_prompt(payload) -> str | None:
     return None if is_coordination_envelope(prompt) else prompt
 
 
+RE_PIN = "re-pin"
+
+
+def hook_decision(doc, agent_uid: str, session: str, prompt: str) -> tuple[str | None, str]:
+    """D109 / D110 on a (fresh) document: (hook_error code or None, kind). kind "event": an ordinary operator event
+    of the pinned PM; "pin_session": the same, and it pins the PM session (none pinned yet); "re_pin": the
+    operator's `re-pin <own uid>` from a role=pm pane, recorded as a pending re-pin (D114: mesh_init apply decides)."""
+    if layers.names(prompt, RE_PIN):
+        if not layers.names(prompt, agent_uid):
+            return "re_pin_not_self", "re_pin"
+        if doc.pm_uid != agent_uid or session != doc.pm_session:
+            return None, "re_pin"
+    if doc.pm_uid is None:
+        return "pm_not_pinned", "event"
+    if doc.pm_uid != agent_uid:
+        return "not_pinned_pm", "event"
+    if doc.pm_session is None:
+        return None, "pin_session"
+    return (None, "event") if session == doc.pm_session else ("session_not_pm", "event")
+
+
 def record_event(env, stdin) -> int:
     root = _root(env)
     store = Store(root / ".mesh")
@@ -153,7 +177,8 @@ def record_event(env, stdin) -> int:
         return 0  # not a mesh project (or not initialised yet): nothing to record into
     at = tools.utc_now()
     try:
-        prompt = operator_prompt(json.loads(stdin.read() or "null"))
+        payload = layers.parse_json(stdin.read() or "null")
+        prompt = operator_prompt(payload)
         if prompt is None:
             return 0
         who = identity.resolve(env, root, Projmux(env))
@@ -162,7 +187,30 @@ def record_event(env, stdin) -> int:
         if not identity.descends_from(os.getpid(), who.claude_pid):  # D96: run by the PM pane's own claude
             store.append_hook_error(at, "parent_not_pm_claude")
             return 0
-        store.record_operator_event(prompt, at, who.caller.agent_uid)
+        if who.live_pms != 1:  # D109: two role=pm agents (a relabelled lead) are never the operator's PM
+            store.append_hook_error(at, "pm_ambiguous")
+            return 0
+        uid, session = who.caller.agent_uid, payload["session_id"]
+        why, _ = hook_decision(store.read().doc, uid, session, prompt)
+        if why is None:
+            entry, why = layers.prompt_proof(payload, prompt, root, env)  # D110: the operator typed it
+        if why is not None:
+            store.append_hook_error(at, why)
+            return 0
+
+        def edit(doc, event):
+            _, kind = hook_decision(doc, uid, session, prompt)
+            if kind == "pin_session":
+                return replace(doc, pm_session=session)
+            if kind == "re_pin":
+                return replace(doc, pm_repin=RePin(event.id, uid, session))
+            return doc
+
+        store.record_operator_event(
+            prompt, at, uid, entry=entry, check=lambda doc: hook_decision(doc, uid, session, prompt)[0], edit=edit
+        )
+    except HookRefused as refused:
+        store.append_hook_error(at, refused.code)
     except Exception as exc:  # the hook never blocks the prompt
         try:
             store.append_hook_error(at, type(exc).__name__)
@@ -174,10 +222,10 @@ def record_event(env, stdin) -> int:
 def main(argv=None, env=None) -> int:
     env = dict(os.environ if env is None else env)
     ns = parser().parse_args(argv)
-    if ns.command == "event":
+    if ns._tool == "event":
         layers.quiet_stdout()  # a UserPromptSubmit hook's stdout would be added to the prompt
         return record_event(env, sys.stdin)
-    return call_tool(ns.command, ns, env)
+    return call_tool(ns._tool, ns, env)
 
 
 if __name__ == "__main__":

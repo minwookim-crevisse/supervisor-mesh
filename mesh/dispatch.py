@@ -1,8 +1,10 @@
 """The work order `work_dispatch` sends: ONE pure function of the item record and the project root (D83).
 
 `HEADER` is the dispatch skill's standard header, verbatim (skills/dispatch/SKILL.md step 3; a test pins the two
-together). The text is never stored: state.json keeps its sha256 (`text_sha256`) and the message-ref, and a replay
-recomposes the text and sends it only when the hash still matches (DEC-0008: no absolute paths in state.json).
+together). The message is the header plus a pointer to the work-order FILE, at most MAX_MESSAGE bytes (pilot: projmux
+refuses longer messages). The text is never stored: state.json keeps its sha256 (`text_sha256`) and the
+message-ref, and a replay recomposes the text and sends it only when the hash still matches (DEC-0008: no absolute
+paths in state.json).
 """
 
 from __future__ import annotations
@@ -34,35 +36,26 @@ def _abs(root: PurePath, path: str) -> str:
     return str(p if p.is_absolute() else root / p)
 
 
-def _bullets(lines) -> list[str]:
-    return [f"- {line}" for line in lines] or ["- (none)"]
-
-
-MAX_ORDER = 100_000  # bytes of one composed order: it travels as ONE argv string (Linux: 128 KiB per argument)
+MAX_MESSAGE = 4096  # bytes (UTF-8) of one projmux message: projmux refuses a longer one; never split
 
 
 def work_order_path(item: Item) -> str:
     return item.contract.scope.work_order or f"docs/work-orders/{item.id}.md"
 
 
-def compose(item: Item, root: PurePath) -> str:
+def compose(item: Item, root: PurePath, message_ref: str) -> str:
+    """The header, then a pointer: the item id, the message-ref and the ABSOLUTE work-order path. The order itself
+    (mission, done criteria, read and write sets, depends) lives in that file and is never inlined (projmux caps a
+    message at MAX_MESSAGE bytes)."""
     c = item.contract
     report = _abs(root, c.scope.report) if c.scope.report else f"your role report under {root / 'docs' / 'reports'}"
     body = [
-        f"Work item: {item.id} (role {c.role}, type {c.type}, contract v{c.version})",
-        f"Work order: {_abs(root, work_order_path(item))} (read it first)",
-        f"Mission: {c.goal}",
-        "Done criteria (captured evidence for each):",
-        *_bullets(c.done_criteria),
-        "Read set:",
-        *_bullets(_abs(root, p) for p in c.scope.read_set),
-        "Write set:",
-        *_bullets(c.scope.write_set),
-        f"Depends on: {', '.join(c.depends) if c.depends else 'none'}",
+        f"Work item: {item.id} (role {c.role}, type {c.type}, contract v{c.version}); message-ref {message_ref}",
+        f"Work order: {_abs(root, work_order_path(item))} (read it first: mission, done criteria, read and write"
+        " sets and depends live in that file, not in this message)",
         f"Report: {report}",
-        f"Lifecycle (supervisor-mesh MCP): work_transition verb start on {item.id} (it returns the attempt id), then "
-        "submit with that attempt id and your commit, then verify (the configured commands run at that commit); "
-        "fail with a class when blocked. A prose report never reaches verified.",
+        f"Lifecycle (supervisor-mesh MCP): work_transition start on {item.id} (returns the attempt id), submit with it"
+        " and your commit, then verify; fail with a class when blocked. A prose report never reaches verified.",
     ]
     return HEADER + "\n\n" + "\n".join(body) + "\n"
 

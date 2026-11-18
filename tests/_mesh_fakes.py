@@ -69,6 +69,26 @@ if tool == "projmux":
     out(None, 2, "fake projmux: unsupported")
 
 if tool == "tmux":
+    if "list-clients" in args:
+        out(st.get("tmux_client", "/dev/pts/9"))
+    if "display-popup" in args:  # D113: play the operator at the popup (it runs the helper; never logs the code)
+        mode = st.get("popup", "none")  # a test that never set it fails fast (refused), never waits
+        if mode != "never":
+            import re, shlex, subprocess
+            helper = subprocess.Popen(shlex.split(args[-1]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            code = None
+            while code is None:
+                line = helper.stdout.readline()
+                if not line:
+                    break
+                m = re.search(r"code: (\S+)", line)
+                code = m.group(1) if m else None
+            if code:  # what the operator read off the popup: kept for the test, outside .mesh/ and the log
+                with open(state_p.parent / "popup-seen", "a") as fh:
+                    fh.write(code + "\n")
+            answer = {"right": code or "", "wrong": "WRONGCODE", "none": ""}[mode]
+            helper.communicate(answer + "\n", timeout=30)
+        out("")
     if "capture-pane" in args:
         pane = args[args.index("-t") + 1]
         p = st["tmux"][pane]
@@ -214,8 +234,9 @@ class Fakes:
         claude_pid: int | None = None,
     ) -> dict:
         """A projmux agent with its pane; `tmux_id` + `screen` give the pane a tmux screen. `claude_pid` is the pane's
-        claude process (status.activation.claude.process.pid); by default the test process itself, an ancestor of every
-        child a test starts (so `mesh event record` run as a child passes the D96 parent check); 0 leaves it out."""
+        claude process (status.activation.claude.process.pid); by default the test process's PARENT, an ancestor of the
+        test process (an in-process production caller passes the D108 check) and of every child a test starts (so `mesh
+        event record` run as a child passes the D96 parent check); 0 leaves it out."""
         pane_uid = pane or f"pane-{uid}"
         item = {
             "metadata": {"uid": uid, "name": name or f"agent-{uid}", "labels": {"role": role} if role else {}},
@@ -224,7 +245,7 @@ class Fakes:
         }
         self.state["agents"].append(item)
         activation = {"agentUID": uid}
-        pid = os.getpid() if claude_pid is None else claude_pid
+        pid = os.getppid() if claude_pid is None else claude_pid
         if pid:
             activation["claude"] = {"process": {"pid": pid, "ownerUID": os.getuid(), "start": "0"}}
         if tmux_id:
@@ -259,3 +280,31 @@ class Fakes:
             return []
         rows = [json.loads(x) for x in self.log_p.read_text(encoding="utf-8").splitlines()]
         return [r["args"] for r in rows if r["tool"] == tool and r["args"][: len(prefix)] == list(prefix)]
+
+
+def pin_pm(store, uid: str = "pm-uid", session: str | None = None) -> None:
+    """D109/D110 fixture: the PM pin mesh_init apply (and the first proven prompt) would leave in state.json."""
+    from dataclasses import replace
+
+    if not store.initialized():
+        store.create()
+    with store.locked() as txn:
+        txn.commit(replace(txn.doc, pm_uid=uid, pm_session=session))
+
+
+def prompt_payload(home: Path, root: Path, prompt: str, session: str = "s") -> dict:
+    """D110 fixture, temp dirs only: append `prompt` as the newest real user entry of the session's transcript under
+    `<home>/.claude/projects/<slug>/<session>.jsonl` and return the UserPromptSubmit payload that names it."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(root))
+    path = Path(home) / ".claude" / "projects" / slug / f"{session}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
+    entry = {"type": "user", "uuid": f"u-{n + 1}", "message": {"role": "user", "content": prompt}}
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    return {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": session,
+        "prompt": prompt,
+        "transcript_path": str(path),
+    }

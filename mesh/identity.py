@@ -29,6 +29,7 @@ class Resolved:
     reason: str
     pane_uid: str | None = None  # the caller's own pane (pane_command never types into it)
     claude_pid: int | None = None  # that pane's claude process, as projmux reports it (the D96 parent check)
+    live_pms: int = 0  # live role=pm members of this project (D109: exactly one may act as the PM)
 
 
 def resolve(env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux) -> Resolved:
@@ -42,16 +43,32 @@ def resolve(env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux) -> Re
         agent_uid, claude_pid = matches[0].agent_uid, matches[0].claude_pid
         if not agent_uid:
             return Resolved(Caller.unknown(), "this pane is not a managed agent")
-        member = next((a for a in pmx.live_members(root) if a.uid == agent_uid), None)
+        members = pmx.live_members(root)
+        member = next((a for a in members if a.uid == agent_uid), None)
     except ProjmuxUnavailable:
         return Resolved(Caller.unknown(), "projmux unavailable")
     if member is None:
         return Resolved(Caller.unknown(), "the pane's agent is not a live, labelled member of this project")
+    pms = sum(1 for a in members if a.role == "pm")
     if member.role == "pm":
-        return Resolved(Caller.pm(member.uid), "pm", pane_uid, claude_pid)
+        return Resolved(Caller.pm(member.uid), "pm", pane_uid, claude_pid, pms)
     if re.fullmatch(ROLE_PATTERN, member.role or ""):
-        return Resolved(Caller.lead(member.role, member.uid), "lead", pane_uid, claude_pid)
+        return Resolved(Caller.lead(member.role, member.uid), "lead", pane_uid, claude_pid, pms)
     return Resolved(Caller.unknown(), "the role label is not a valid role")
+
+
+class PaneCaller:
+    """The production caller of a front door: called, the pane's identity (read-only tools, unchanged); `resolved()`,
+    the full answer `layers.proven_caller` checks for every non-read-only call (D108, D109)."""
+
+    def __init__(self, env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux):
+        self.env, self.root, self.pmx = env, root, pmx
+
+    def resolved(self) -> Resolved:
+        return resolve(self.env, self.root, self.pmx)
+
+    def __call__(self) -> Caller:
+        return self.resolved().caller
 
 
 ANCESTRY_DEPTH = 8  # claude -> sh (the hook) -> sh (the launcher, exec'd into python) leaves room to spare
