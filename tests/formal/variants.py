@@ -14,6 +14,7 @@ one scenario cfg. Expected TLC outcome per kind:
                   and so does every property of the scenario (a fix may not break another one)
   reading   PASS  the other reading of an ambiguous row: the finding's property holds under it,
                   together with every property of the scenario
+(The d65-d81 variants restore the behaviour before decisions D65-D76 and D81, one to three per decision.)
 Each variant runs in its own dir inside formal-check.sh's work dir, one TLC job at a time. The dir
 (spec copy, run.cfg, tlc.log, trace.json) is removed when the variant behaves as expected; it is
 kept, and its path printed, when it does not, or for every variant with --keep (FORMAL_KEEP=1).
@@ -46,9 +47,9 @@ var("inv1-tableonly-close-from-verifying", "broken", "Core", "PROPERTY TableOnly
     "close also accepted from verifying (a row the table does not have)")
 var("inv1-tableonly-reads-the-state-diff", "broken", "Core", "PROPERTY TableOnly",
     [('     IN Apply(i, rec, L("reject", "pm", i, rec, cls))',
-      '     IN Apply(i, [rec EXCEPT !.state = "ready"], L("reject", "pm", i, rec, cls))')],
+      '     IN Apply(i, [rec EXCEPT !.state = "ready", !.blocked_reason = "none"], L("reject", "pm", i, rec, cls))')],
     "reject writes ready while its step label still says rework (the label is not the state diff)")
-var("inv1-tableonly-split-child-not-draft", "broken", "Split", "PROPERTY TableOnlyExceptStructural",
+var("inv1-tableonly-split-child-not-draft", "broken", "Split", "PROPERTY TableOnly",
     [('ELSE IF j \\in C THEN [EmptyItem EXCEPT !.state = "draft", !.parent = i]',
       'ELSE IF j \\in C THEN [EmptyItem EXCEPT !.state = "ready", !.parent = i]')],
     "split creates its children as ready, not as drafts (a write to another item than the step's)")
@@ -59,20 +60,20 @@ var("inv1-unlisted-not-refused", "broken", "TableWalk", "INVARIANT UnlistedRefus
 var("inv1-unlisted-refusal-not-recorded", "broken", "TableWalk", "INVARIANT UnlistedRefused",
     [("  /\\ RefuseStep(c, v, i, NotInTable)",
       "  /\\ step' = StepRec(v, c, \"\", i, StateOf(i), StateOf(i), TRUE, NotInTable)\n"
-      "  /\\ UNCHANGED <<item, version, config_hash, clock, events, live, pane, ghost, refusals>>")],
+      "  /\\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost, refusals>>")],
     "an unlisted request is refused but not recorded in the refusal log")
 var("inv1-unlisted-refusal-writes", "broken", "TableWalk", "PROPERTY RefusedUnchanged",
     [("  /\\ RefuseStep(c, v, i, NotInTable)",
       "  /\\ Refused(c, v, \"\", i, NotInTable)\n"
       "  /\\ Write1(i, item[i])\n"
-      "  /\\ UNCHANGED <<config_hash, clock, events, live, pane, ghost>>")],
+      "  /\\ UNCHANGED <<config_hash, seq, events, live, pane, ghost>>")],
     "the refusal of an unlisted request writes the record (bumps its version)")
 var("inv1-guard-refusal-writes-evidence", "broken", "Core", "PROPERTY GuardRefusedUnchanged",
     [('     ELSE RefuseStep(Lead, "verify", i, "inputs_changed")',
       '     ELSE /\\ Refused(Lead, "verify", "", i, "inputs_changed")\n'
       '          /\\ item\' = [item EXCEPT ![i].evidence = [run |-> "attempt", commit |-> item[i].attempt.commit,\n'
       '                        contract_version |-> item[i].contract_version, config_hash |-> config_hash]]\n'
-      '          /\\ UNCHANGED <<version, config_hash, clock, events, live, pane, ghost>>')],
+      '          /\\ UNCHANGED <<version, config_hash, seq, events, live, pane, ghost>>')],
     "a verify refused as inputs_changed still records evidence on the item")
 # ---- invariant 2 ----
 var("inv2-table-without-limit-exit", "broken", "Core", "INVARIANT TableExits",
@@ -143,72 +144,98 @@ var("inv9-parent-closes-without-own-verification", "broken", "Split", "INVARIANT
       '                   !.attempt = [@ EXCEPT !.commit = MergedCommit,')],
     "pre-D61: when every child is closed the mesh closes the parent directly")
 var("inv10-limit-resume-accepts-old-reply", "broken", "Replies", "PROPERTY LimitReplyFresh",
-    [("FreshReplies(i) == {r \\in item[i].replies : r.ts > item[i].limit_at /\\ ~r.consumed}",
+    [("FreshReplies(i) == {r \\in item[i].replies : r.seq > item[i].limit_seq /\\ ~r.consumed}",
       "FreshReplies(i) == {r \\in item[i].replies : ~r.consumed}")],
     "pre-D63: any attached unconsumed reply unlocks blocked(limit), also one older than the limit event")
-var("inv10-single-use-dropped", "broken", "RepliesClockTies", "PROPERTY LimitReplySingleUse",
-    [("FreshReplies(i) == {r \\in item[i].replies : r.ts > item[i].limit_at /\\ ~r.consumed}",
-      "FreshReplies(i) == {r \\in item[i].replies : r.ts > item[i].limit_at}")],
-    "N2: the consumed (single-use) check dropped; a lagging limit-entry time lets a consumed reply unlock again")
-var("inv11-cas-compares-attempt-only", "broken", "Cas", "PROPERTY StaleNeverWritten",
-    [("IF version[i] = pane[p].read_version /\\ item[i].attempt.id = pane[p].read_attempt",
+var("inv10-single-use-dropped", "broken", "Replies", "PROPERTY LimitReplySingleUse",
+    [("FreshReplies(i) == {r \\in item[i].replies : r.seq > item[i].limit_seq /\\ ~r.consumed}",
+      "FreshReplies(i) == {r \\in item[i].replies : r.seq > item[i].limit_seq}"),
+     ("!.retry = retry, !.limit_seq = LimitEntrySeq,",
+      "!.retry = retry, !.limit_seq = IF @ = 0 THEN LimitEntrySeq ELSE @,"),
+     ("     !.limit_seq = LimitEntrySeq, !.failure",
+      "     !.limit_seq = IF @ = 0 THEN LimitEntrySeq ELSE @, !.failure")],
+    "N2: the consumed (single-use) check dropped while a re-entry keeps the first limit_seq; with one seq "
+    "and a re-recorded limit_seq freshness alone implies single use, so both are weakened")
+var("inv11-cas-compares-attempt-id-only", "broken", "Cas", "PROPERTY StaleNeverWritten",
+    [("IF AttemptFields(item[i]) = pane[p].read_fields /\\ item[i].attempt.id = pane[p].read_attempt",
       "IF item[i].attempt.id = pane[p].read_attempt")],
-    "the verify write re-checks the attempt id but not the record version")
+    "the verify write re-checks the attempt id but not state, contract version and submitted commit")
 var("inv11-submit-ignores-attempt-id", "broken", "Cas", "PROPERTY StaleNeverWritten",
     [("  /\\ IF Owns(p, i)\n", "  /\\ IF TRUE\n")],
     "submit from a pane whose attempt is not the current one is accepted (older attempt ids, section 8)")
 var("typeok-cancel-keeps-reason", "broken", "Core", "INVARIANT TypeOK",
-    [('!.state = "cancelled", !.blocked_reason = "none"]', '!.state = "cancelled"]')],
+    [('LET rec == [item[i] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]',
+      'LET rec == [item[i] EXCEPT !.state = "cancelled"]')],
     "cancel leaves a stale blocked_reason on the record")
-# ---- gap probes ----
-var("g2a-confirm-classless-rework-reassignable", "broken", "SplitConsumed", "PROPERTY ClasslessReworkStuck",
-    [('IF item[i].failure.class = "defect"', 'IF item[i].failure.class \\in {"defect", "none"}')],
-    "reassign also accepts a rework without class (shows ClasslessReworkStuck can fail)")
-var("g2a-reading-mesh-sets-defect", "reading", "SplitConsumed", "INVARIANT NoDeadItem",
-    [('         rec == [item[i] EXCEPT !.state = "rework", !.blocked_reason = "none",\n',
-      '         rec == [item[i] EXCEPT !.state = "rework", !.blocked_reason = "none",\n'
-      '                   !.failure = [class |-> "defect", reason |-> "none"],\n')],
-    "section-5 reading: mesh (split parent) sets defect on the cancelled-child step, so reassign works")
-var("g1-fixed-reject-routes-by-class", "fixed", "Replies", "PROPERTY RouteByClass",
-    [('LET rec == [item[i] EXCEPT !.state = "rework", !.failure = [class |-> cls, reason |-> "none"]]',
-      'LET rec == [item[i] EXCEPT !.state = RouteOf(cls).state, !.blocked_reason = RouteOf(cls).blocked_reason,\n'
-      '                             !.failure = [class |-> cls, reason |-> "none"]]'),
-     ('    Row("reject",     "pm",            {"verified"}, {"rework"}),',
-      '    Row("reject",     "pm",            {"verified"}, {"rework", Blocked("awaiting_user")}),')],
-    "hypothetical: reject routes by section 5 (ambiguity -> blocked(awaiting_user)), and its row says so")
-var("g2b-fixed-siblings-cancelled", "fixed", "Split", "INVARIANT NoOrphanChildren",
-    [('     IN Apply(i, rec, L("mesh", "mesh", i, rec, "a cancelled child"))',
-      '     IN /\\ item\' = [j \\in Items |-> IF j = i THEN rec\n'
-      '                    ELSE IF j \\in item[i].children /\\ item[j].state \\notin Terminal\n'
-      '                         THEN [item[j] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]\n'
-      '                         ELSE item[j]]\n'
-      '        /\\ version\' = [j \\in Items |->\n'
-      '                         IF j = i \\/ (j \\in item[i].children /\\ item[j].state \\notin Terminal)\n'
-      '                         THEN version[j] + 1 ELSE version[j]]\n'
-      '        /\\ pane\' = DirtyFor(item[i].children \\cup {i}, "mesh")\n'
-      '        /\\ step\' = L("mesh", "mesh", i, rec, "a cancelled child; remaining children cancelled")\n'
-      '        /\\ UNCHANGED refusals'),
-     ('        /\\ item\'[i] = [EmptyItem EXCEPT !.state = "draft", !.follows = k]\n',
-      '        /\\ item\'[i] = [EmptyItem EXCEPT !.state = "draft", !.follows = k]\n'
-      '     \\/ /\\ step\'.verb = "mesh" /\\ i \\in item[k].children\n'
-      '        /\\ item\'[i] = [item[i] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]\n')],
-    "hypothetical: a cancelled child also cancels the remaining children (one possible disposition)")
-var("g4-fixed-verify-clears-flag", "fixed", "Core", "INVARIANT FlagClearedByReverify",
-    [('  [item[i] EXCEPT !.state = "verified",\n',
-      '  [item[i] EXCEPT !.state = "verified", !.revalidate = FALSE,\n')],
-    "hypothetical: a new verification clears the revalidate flag")
-var("g5-fixed-follow-up-row", "fixed", "FollowUp", "PROPERTY TableOnly",
-    [('"revalidate",\n             "override"}', '"revalidate",\n             "override", "(follow-up draft)"}'),
-     ('    Row("override",   "operator",      Created, Created) }',
-      '    Row("override",   "operator",      Created, Created),\n'
-      '    Row("(follow-up draft)", "slack watcher", {"closed"}, {"unchanged"}),\n'
-      '    Row("(follow-up draft)", "pm", {"closed"}, {"unchanged"}) }')],
-    "hypothetical: the table gets follow-up rows for a reply and for a revalidate flag on a closed item")
-var("g8-fixed-parent-verification-row", "fixed", "Split", "PROPERTY TableOnly",
-    [('    Row("mesh",       "mesh",          {Blocked("children")}, {"verifying", "rework"}),\n',
-      '    Row("mesh",       "mesh",          {Blocked("children")}, {"verifying", "rework"}),\n'
-      '    Row("mesh",       "mesh",          {"verifying"}, {"verified", "rework"}),\n')],
-    "hypothetical: the table gets a (mesh) row for the split parent's own verification")
+# ---- decisions D65-D76: the OLD behaviour (as model-checked in WO-0016) must fail ----
+var("d65-reject-always-rework", "broken", "Replies", "PROPERTY RouteByClass",
+    [('LET rec == [item[i] EXCEPT !.state = RouteOf(cls).state, !.blocked_reason = RouteOf(cls).blocked_reason,',
+      'LET rec == [item[i] EXCEPT !.state = "rework", !.blocked_reason = "none",')],
+    "pre-D65 (G1): reject always goes to rework, also for class ambiguity")
+var("d66-child-cancelled-no-cascade", "broken", "Split", "INVARIANT NoOrphanChildren",
+    [('CascadeWrite(i, rec, ActiveChildren(i), L("mesh"', 'CascadeWrite(i, rec, {}, L("mesh"')],
+    "pre-D66 (G2b): a cancelled child sends the parent to rework, the other children stay active")
+var("d66-parent-cancel-no-cascade", "broken", "Split", "INVARIANT NoOrphanChildren",
+    [('CascadeWrite(i, rec, ActiveChildren(i), L("cancel"', 'CascadeWrite(i, rec, {}, L("cancel"')],
+    "pre-D66 (F2): cancelling a split parent leaves its children active")
+var("d67-resplit-keeps-cancelled-child", "broken", "Resplit", "PROPERTY ResplitCanComplete",
+    [("!.children = (@ \\ gone) \\cup C, !.former_children = @ \\cup gone]", "!.children = @ \\cup C]")],
+    "pre-D67 (O3-8 stay_linked): a re-split keeps the cancelled child linked")
+var("d68-refused-precheck-writes", "broken", "Core", "PROPERTY GuardRefusedUnchanged",
+    [('     ELSE RefuseStep("pm", "unblock", i, "precheck refused")',
+      '     ELSE /\\ Refused("pm", "unblock", "", i, "precheck refused; environment +1")\n'
+      '          /\\ Write1(i, [item[i] EXCEPT !.environment_unblock = @ + 1])\n'
+      '          /\\ UNCHANGED <<config_hash, seq, events, live, pane, ghost>>')],
+    "pre-D68 (O3-9 precheck_refused, G3): a refused precheck counts and writes the record")
+var("d68-passing-unblock-not-counted", "broken", "Core", "INVARIANT BoundedStarts",
+    [("     THEN LET e == item[i].environment_unblock + 1 IN", "     THEN LET e == item[i].environment_unblock IN")],
+    "pre-D68 (O3-9 precheck_refused, inv 5): a passing unblock is not counted, starts are unbounded")
+var("d69-verify-keeps-flag", "broken", "Core", "INVARIANT FlagClearedByReverify",
+    [('  [item[i] EXCEPT !.state = "verified", !.revalidate = FALSE,\n', '  [item[i] EXCEPT !.state = "verified",\n')],
+    "pre-D69 (G4): a passing verification keeps an older revalidate flag")
+var("d70-follow-up-without-row", "broken", "FollowUp", "PROPERTY TableOnly",
+    [('    Row("mesh",       "mesh",          {"closed"}, {"unchanged"}),'
+      '                        \\* (mesh) follow-up\n', '')],
+    "pre-D70 (G5): the follow-up draft for a closed item has no section-4 row")
+var("d71-cancel-leaves-dependents-ready", "broken", "Deps", "PROPERTY DependentsBlockedOnCancel",
+    [('      D == {j \\in Items \\ ({i} \\cup K) : StateOf(j) = "ready" /\\ item[j].depends \\cap gone # {}}',
+      '      D == {}')],
+    "pre-D71 (G6): a cancel leaves its ready dependents in ready")
+var("d72-parent-verify-without-row", "broken", "Split", "PROPERTY TableOnly",
+    [('    Row("mesh",       "mesh",          {"verifying"}, {"verified"}),'
+      '                      \\* (mesh) parent verify pass\n'
+      '    Row("mesh",       "mesh",          {"verifying"}, {"rework"}),'
+      '                        \\* (mesh) parent verify fail\n', '')],
+    "pre-D72 (G8): no section-4 row moves a split parent out of verifying")
+var("d73-override-enters-limit", "broken", "TableWalk", "PROPERTY LimitOnlyByMesh",
+    [('t \\in Created \\ {StateOf(i), Blocked("limit")}', 't \\in Created \\ {StateOf(i)}')],
+    "pre-D73 (F1): override (any -> any) may enter blocked(limit)")
+var("d74-two-clocks-limit-lags", "broken", "Replies", "PROPERTY LimitReplyFresh",
+    [("LimitEntrySeq == seq + 1", "LimitEntrySeq == IF seq > 0 THEN seq - 1 ELSE 0")],
+    "pre-D74 (inv 10, G7): the recorded limit time comes from another clock and lags the entry")
+var("d75-split-consumes-failure", "broken", "Split", "INVARIANT RouteDefined",
+    [("!.children = (@ \\ gone) \\cup C, !.former_children = @ \\cup gone]",
+      "!.children = (@ \\ gone) \\cup C, !.former_children = @ \\cup gone, !.failure = NoFailure]")],
+    "pre-D75 (G2a reading): split consumes the conflict/too_large record; a cancelled child leaves a classless rework")
+var("d76-cas-on-record-version", "broken", "Cas", "PROPERTY ReplyNeverDiscardsVerify",
+    [("PaneIdle == [phase |-> \"idle\", owns |-> 0, item_id |-> 0, read_fields |-> NoFields,",
+      "PaneIdle == [phase |-> \"idle\", owns |-> 0, item_id |-> 0, read_fields |-> NoFields, read_version |-> 0,"),
+     ("                                   !.read_fields = AttemptFields(item[i]),\n",
+      "                                   !.read_fields = AttemptFields(item[i]), !.read_version = version[i],\n"),
+     ("IF AttemptFields(item[i]) = pane[p].read_fields /\\ item[i].attempt.id = pane[p].read_attempt",
+      "IF version[i] = pane[p].read_version /\\ item[i].attempt.id = pane[p].read_attempt")],
+    "pre-D76 (N1): the verify write re-checks the record version, so any reply-side write discards the run")
+
+var("d81-ready-accepts-cancelled-dependency", "broken", "Deps", "INVARIANT NoWaitOnCancelled",
+    [("       ELSE IF CancelledDepends(D)\n", "       ELSE IF FALSE\n")],
+    "pre-D81 (WO-0020 deps-inv14): ready accepts a dependency that is already cancelled")
+var("d81-reassign-keeps-cancelled-dependency", "broken", "DepsRoutes", "PROPERTY DependsNotCancelledAtReady",
+    [('  /\\ IF CancelledDepends(item[i].depends)\n     THEN RefuseStep("pm", "reassign", i, D81Why)',
+      '  /\\ IF FALSE\n     THEN RefuseStep("pm", "reassign", i, D81Why)')],
+    "pre-D81: reassign returns to ready with a dependency cancelled while the item was in rework")
+var("d81-unblock-keeps-cancelled-dependency", "broken", "DepsRoutes", "INVARIANT NoWaitOnCancelled",
+    [('  /\\ IF precheck = "passes" /\\ CancelledDepends(item[i].depends)', '  /\\ IF FALSE')],
+    "pre-D81: unblock returns to ready with a dependency cancelled while the item was blocked(environment)")
 
 EXPECTED = {"broken": "FAIL", "nowit": "PASS", "fixed": "PASS", "reading": "PASS"}
 
@@ -270,7 +297,7 @@ def _final_lines(st):
         f = rec.get("failure", {})
         if f.get("class") != "none" or rec["state"] in ("rework", "blocked"):
             extra.append("failure=%s/%s" % (f.get("class"), f.get("reason")))
-        for key in ("depends", "children", "parent", "follows", "retry", "environment_unblock"):
+        for key in ("depends", "children", "former_children", "parent", "follows", "retry", "environment_unblock"):
             if rec.get(key):
                 extra.append("%s=%s" % (key, rec[key]))
         if rec.get("revalidate"):
@@ -281,41 +308,41 @@ def _final_lines(st):
     return out
 
 
-def _limit_at(st):
-    """The recorded limit_at of the item a limit-entry step put in blocked(limit), else None."""
+def _limit_seq(st):
+    """The recorded limit_seq of the item a limit-entry step put in blocked(limit), else None."""
     s = st.get("step", {})
     if s.get("limit_by") != "mesh counter":
         return None
     for i, rec in _items(st):
         if str(i) == str(s.get("item_id")):
-            return rec.get("limit_at")
+            return rec.get("limit_seq")
     return None
 
 
 def _times(st):
-    """The times a step records (reply ts, event ts, limit_at against its entry tick)."""
+    """The seqs a step records (reply seq, event seq, limit_seq against its entry seq)."""
     s = st.get("step", {})
-    lt = _limit_at(st)
+    lt = _limit_seq(st)
     if lt is not None:
-        return " [limit_at recorded as %s, entry at tick %s]" % (lt, st.get("clock"))
+        return " [limit_seq recorded as %s, entry at seq %s]" % (lt, st.get("seq"))
     if s.get("verb") == "attach" and not s.get("refused"):
-        return " [reply ts %s]" % st.get("clock")
+        return " [reply seq %s]" % st.get("seq")
     if s.get("kind") == "env" and s.get("verb", "").startswith("hook:"):
-        return " [event ts %s]" % st.get("clock")
+        return " [event seq %s]" % st.get("seq")
     if s.get("reply"):
-        return " [reply ts %s]" % s["reply"]
+        return " [reply seq %s]" % s["reply"]
     return ""
 
 
 def trace_lines(path):
     """A TLC -dumpTrace json file as numbered steps in the model's words, then the final items.
 
-    Times are printed only when a limit entry recorded a limit_at other than its tick (ClockTies)."""
+    Seqs are printed only when a limit entry recorded a limit_seq other than its own seq (a broken D74)."""
     try:
         states = _states(path)
     except (OSError, ValueError) as exc:
         return ["(no trace: %s)" % exc]
-    skew = any(_limit_at(st) not in (None, st.get("clock")) for st in states[1:])
+    skew = any(_limit_seq(st) not in (None, st.get("seq")) for st in states[1:])
     out = ["%2d. %s%s" % (k, _step_line(states[k - 1], st), _times(st) if skew else "")
            for k, st in enumerate(states[1:], 1)]
     if states:

@@ -23,12 +23,21 @@
 | WO-0016 | Formal verification of the work-item state model (TLA+), `docs/work-orders/2026-10-21-verification-skills.md` | qa | — | pass (PM gate 2026-10-26: make formal 82 runs 0 UNEXPECTED; 12 FINDING/2 READING/3 STRUCTURAL/1 NOTE await PM decision) | `docs/reports/WO-0016-qa.md` |
 | WO-0017 | App-driving verification skill `verify-supervisor-mesh`, same work order | qa | — (∥ WO-0016) | pass with correction (live init-check rerun FAIL → verifier fixed, re-checked on saved live data; selftest + make check 0) | `docs/reports/WO-0017-qa.md` |
 | WO-0018 | Local checkpoint commit (batch V work + state model + docs), NO push | ship | — | pass (335540f, local only) | — |
-| WO-0019 | Commit batch V final (skill fixes, WO-0016/0017 reports, tracker) and PUSH main to origin (operator OK 2026-10-26) | ship | WO-0016, WO-0017 | dispatched | — |
+| WO-0019 | Commit batch V final (skill fixes, WO-0016/0017 reports, tracker) and PUSH main to origin (operator OK 2026-10-26) | ship | WO-0016, WO-0017 | pass (692c02a; commit by ship, push run by operator after worker push was permission-denied; origin/main = 692c02a) | — |
+| WO-0020 | Re-sync TLA+ model to D65-D76, `docs/work-orders/2026-10-29-state-model-resync.md` | qa | — | pass (PM gate 2026-11-18: make formal 67 runs 0 FINDING 0 UNEXPECTED; variants 44/44; make check 0; D81 added) | `docs/reports/WO-0020-qa.md` |
+| WO-0021 | init step 6 privacy fix + preview/apply rule, same work order | backend | — (∥ WO-0020) | pass (PM-checked 2026-10-29: 7 companion tests OK; helper prints presence only; ruff not installed, lint unproven) | `docs/reports/WO-0021-backend.md` |
+| WO-0022 | mesh package + stdio MCP server (MVP 0.2.0), `docs/work-orders/2026-11-18-mcp-mvp.md` | backend | — (∥ WO-0020) | dispatched | `docs/reports/WO-0022-backend.md` |
+| WO-0023 | Security review of the MCP tool surface, same work order | security | WO-0022 | waiting | `docs/reports/WO-0023-security.md` |
+| WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | waiting | `docs/reports/WO-0024-qa.md` |
+| WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | waiting | — |
+| WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | dispatched | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).
 
 Batch 2 = WO-0004 (backend, code) ∥ WO-0007 (each lead, own report). Disjoint files.
 Batch 3 = WO-0005-S (security, read-only) ∥ WO-0005-Q (qa: tests/test_slack.py, scripts/scrub.sh) ∥ WO-0008 (backend: README). Disjoint files.
 Batch V = WO-0016 ∥ WO-0017 (qa lead, disjoint files; integration gate = PM runs `make check` + `make formal`). Gate 2026-10-26: make check 0, make formal 0, smv selftest 0, scrub 0. Durable QA evidence: `~/.local/state/supervisor-mesh-qa/` (scratchpad is wiped on reboot).
-Follow-ups (not dispatched): design decisions G1-G8, F1, F2, O3-8, O3-9 (PM); init step 6 reads the user plugin registry + preview/apply chaining rule (backend); smv.py package split, FakeSlack helper, shared role lookup, formal runner/probes module, 5 skill doc notes (qa); live runs of the other five features and `marketplace remove` (qa).
+Design findings G1-G8, F1, F2, O3-8, O3-9, inv 10, N1 decided 2026-10-29 (D65-D76). Batch W = WO-0020 ∥ WO-0021 (integration gate = PM runs `make check` + `make formal`).
+Batch M (MCP MVP 0.2.0, spec `docs/designs/mcp-server-spec.md`, D77-D80): WO-0020 ∥ WO-0022 → WO-0023 ∥ WO-0024 → PM gate (make check + make formal + live evidence) → WO-0025.
+Follow-ups (not dispatched): smv.py package split, FakeSlack helper, shared role lookup, formal runner/probes module, 5 skill doc notes (qa); live runs of the other five features and `marketplace remove` (qa).
 Design for WO-0009..0015: `docs/designs/pm-led-onboarding.md` (APPROVED 2026-10-14).

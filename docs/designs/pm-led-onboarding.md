@@ -1347,18 +1347,39 @@ State: approved
 Actual answer: operator free-text answer (2026-10-20): operator answers come through the PM terminal or Slack; the PM terminal is the current channel, so the hook/event trigger is set for it (D64).
 Accepted scope: `UserPromptSubmit` hook (installed by `mesh init`) runs `mesh event record --source terminal`, recording PM-pane prompts only to `.mesh/events.jsonl`; pm verb `reply <item> --event <id>` accepts only hook-recorded events; `operator_channel` config defaults to `terminal`; D63 freshness/single use applies; tests listed in work-item-state-model.md section 9a. Folded into T2 (reply verb), T3 (hook + config), T4 (Slack path unchanged).
 
+### Formal verification findings (WO-0016, TLA+, decided 2026-10-29)
+Source: `docs/reports/WO-0016-qa.md` section 5; model `tests/formal/` at 335540f. Asked in Korean in chat; recorded here in English. All twelve answered with the recommended option.
+
+| finding | answer | decision |
+|---|---|---|
+| G1 reject always to rework vs ambiguity route | `reject --class`; ambiguity -> blocked(awaiting_user) | D65 |
+| G2b, F2 orphan children (cancelled child / cancelled parent) | mesh cancels remaining active children | D66 |
+| O3-8 re-split never completes with stay_linked | unlink cancelled children to `former_children[]` | D67 |
+| O3-9 environment counter event (+ G3, inv 5 break) | +1 per passing unblock; refused precheck writes nothing | D68 |
+| G4 revalidate flag never cleared | passing verification clears it | D69 |
+| G5 follow-up draft has no row | add (mesh) follow-up row | D70 |
+| G6 ready item waits on a cancelled dependency | mesh moves it to blocked(awaiting_user) `dependency_cancelled` | D71 |
+| G8 no row out of split-parent verifying | add (mesh) pass/fail rows | D72 |
+| F1 override can enter blocked(limit) | override may not target blocked(limit) | D73 |
+| inv 10 (G7) two clocks | one mesh `seq` orders replies and limit entry | D74 |
+| G2a split consuming the failure record | `failures[]` append-only; split keeps it | D75 |
+| N1 CAS starves verification | CAS on attempt-relevant fields only | D76 |
+
+State: approved. Applied to `work-item-state-model.md` (sections 1, 3, 4, 5, 6, 8, 9, 9a, 10, 11, 12; invariants 13-15 added). Follow-up: re-sync the TLA+ model and re-run `make formal`; every former FINDING above must turn into PASS (QA work order).
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | issues_open (all resolved by decision) | mode: SCOPE_REDUCTION, 0 critical gaps; 3 deferred, 2 kept; 5 flow/premise findings + 7 outside findings decided |
 | Outside Review | codex plan-review (default-on, in /plan-eng-review and /plan-ceo-review) | Independent 2nd opinion | 3 | completed (eng run 1 unavailable: auth) | eng: 9 findings, all accepted; CEO: 7 findings; 7 resolved; 0 unresolved |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open (all resolved by decision) | 6 issues, 0 critical gaps |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | issues_open (all resolved by decision) | round 1: 6 issues; round 3: E1-E6 + Codex O3-1..O3-9 (D52-D64, D67, D68); formal model: 12 findings (D65-D76); 0 critical gaps |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
 - **OUTSIDE COVERAGE:** codex (gpt-6-astra), plan-review phase: eng run 1 unavailable (refresh_token_reused), eng run 2 completed with 9 findings (D26-D35), CEO run completed with 7 findings (4 High, 3 Medium), resolved by D45-D50 and one factual correction (X7).
 - **CROSS-MODEL:** native CEO review found the flow-conformance gaps (W1-W3, E-1, B1); Codex found the cross-decision inconsistencies (caller rules, evidence capture, policy binding, Slack guarantee, completion boundary, baseline comparability, naming vs deferral). Codex advised cutting D42 and the D43 comparison; the operator kept both with corrections. Model identities: native = this Claude session; outside = gpt-6-astra.
-- **VERDICT:** no review CLEAR (count rule: issues found, all decided). The CEO review changed the state machine (transition table, `closed`, failure classes, type guards), so a fresh eng review of E2 is recommended before the work-order rewrite; eng review required.
+- **FORMAL:** TLA+/TLC (WO-0016) model-checked the state model: 82 runs, 12 FINDING, 2 READING, 3 STRUCTURAL, 1 NOTE, 0 UNEXPECTED; all decided (D65-D76). Re-sync of the model to the decided table is a follow-up.
+- **VERDICT:** no review CLEAR (count rule: issues found, all decided). Eng round 3 is complete: no open items remain in the state model. Next: re-sync and re-run the formal model, then the work-order rewrite (WO-0009+ per D35/T1-T8).
 
 NO UNRESOLVED DECISIONS

@@ -1,7 +1,7 @@
 ---------------------------- MODULE WorkItemState ----------------------------
 (* TLA+ model of the mesh work-item state machine of                       *)
-(* docs/designs/work-item-state-model.md, sections 1-10 and the open items   *)
-(* O3-8 / O3-9 of section 12 (why each row exists: D52-D64 in                *)
+(* docs/designs/work-item-state-model.md, sections 1-10 (decisions D40-D76;  *)
+(* why each row exists: the review records in                                *)
 (* docs/designs/pm-led-onboarding.md).  Every action that implements a       *)
 (* section-4 row carries a comment  \* row: <verb> | <caller> | <from> | <to> *)
 (* copied from the table; steps that are not rows say so.  Names follow the  *)
@@ -24,17 +24,11 @@ CONSTANTS
     Panes,              \* lead panes that run `verify` as read / unlocked commands / CAS write (section 8); {} = atomic
     WithRefuse,         \* generic refusal of every verb x caller x state not in the table (invariant 1)
     WithOverride,       \* the operator `override` row
-    FollowUpBy,         \* who opens a follow-up draft for a closed item (gap G5: no section-4 row):
-                        \* "slack watcher" (thread reply, section 9 / D41), "pm" (revalidate flag, D60)
-    SplitFailure,       \* reading behind G2a: "kept" = the conflict/too_large record that routed the split
-                        \* stays the parent's latest failure (failures[] keeps it); "consumed" = split consumes it
-    O38,                \* open item O3-8: "stay_linked" (as written) | "unlink"
-    O39,                \* open item O3-9: "unblock_pass" | "precheck_refused"
-    ClockTies,          \* FALSE: one strictly increasing clock stamps replies, events and limit entries; TRUE: the
-                        \* recorded limit-entry time may tie with or lag one tick behind them (two clocks, D64)
+    FollowUpOn,         \* what triggers the (mesh) follow-up row on a closed item (D70):
+                        \* "thread reply" (section 9), "revalidate flag" (D60)
     MaxContractVersion, \* exploration bound (CONSTRAINT Bounds)
     MaxAttempts,        \* exploration bound
-    MaxClock,           \* exploration bound
+    MaxSeq,             \* exploration bound on the mesh seq
     MaxVersion,         \* exploration bound on the record version (CAS scenario only)
     MaxCancelled        \* exploration bound: items in state cancelled
 
@@ -42,15 +36,15 @@ VARIABLES
     item,         \* item record per slot (section 3), without `version`
     version,      \* the record `version` field of section 3 (compare-and-set, D57); kept apart for the fingerprint
     config_hash,  \* effective verification config hash: commands + required evidence (D47)
-    clock,        \* logical time: one tick per Slack reply, operator event and limit entry (D63, D64)
+    seq,          \* the one monotonic mesh `seq` (D74): stamps reply receipts, terminal events, limit entries
     events,       \* .mesh/events.jsonl: operator prompts recorded by the PM-pane hook (section 9a)
     live,         \* the assigned lead pane is live ("agent live", D45)
-    pane,         \* lead panes inside a `verify` (section 8); field `dirty` is a ghost
+    pane,         \* lead panes inside a `verify` (section 8); fields `dirty`, `dirty_by` are ghosts
     ghost,        \* history read only by properties, never by an action
     step,         \* label of the last step (verb, caller, from, to, refused); not in View
     refusals      \* refusal log: the last refused (caller, verb, item, reason); not in View
 
-vars == <<item, version, config_hash, clock, events, live, pane, ghost, step, refusals>>
+vars == <<item, version, config_hash, seq, events, live, pane, ghost, step, refusals>>
 
 -----------------------------------------------------------------------------
 (* Section 1: states and blocked reasons.                                   *)
@@ -74,7 +68,6 @@ Terminal == {"closed", "cancelled"}
 Created == NonTerminal \cup Terminal
 Classes == {"defect", "conflict", "ambiguity", "environment", "limit"}
 MergedCommit == 1000   \* the split parent's merged commit (section 7)
-FollowUpVerb == "(follow-up draft)"   \* the step label of a follow-up draft; not a section-4 verb (G5)
 NotInTable == "not in the transition table"
 
 \* the design's state name, with the blocked reason folded in: "blocked(limit)"
@@ -86,6 +79,7 @@ ReproHash(i) == IF i \in BugfixItems THEN 1 ELSE 0
 -----------------------------------------------------------------------------
 (* Section 4: the transition table as data (verb, caller, from, to), one    *)
 (* entry per row of the design; "unchanged" = the row leaves the state.     *)
+(* The (mesh) rows share the verb "mesh" and differ by from / to.           *)
 
 Row(v, c, F, T) == [verb |-> v, caller |-> c, from |-> F, to |-> T]
 Table ==
@@ -104,15 +98,19 @@ Table ==
     Row("fail",       "pm",            {"running", "verifying"}, {Blocked("environment")}),
     Row("reassign",   "pm",            {"rework"}, {"ready"}),
     Row("split",      "pm",            {"rework"}, {Blocked("children")}),
-    \* (mesh): to verifying; its guard column adds "a cancelled child -> rework"
-    Row("mesh",       "mesh",          {Blocked("children")}, {"verifying", "rework"}),
+    Row("mesh",       "mesh",          {Blocked("children")}, {"verifying"}),             \* (mesh) children done
+    Row("mesh",       "mesh",          {Blocked("children")}, {"rework"}),                \* (mesh) child cancelled
+    Row("mesh",       "mesh",          {"verifying"}, {"verified"}),                      \* (mesh) parent verify pass
+    Row("mesh",       "mesh",          {"verifying"}, {"rework"}),                        \* (mesh) parent verify fail
+    Row("mesh",       "mesh",          {"ready"}, {Blocked("awaiting_user")}),            \* (mesh) dependency cancelled
+    Row("mesh",       "mesh",          {"closed"}, {"unchanged"}),                        \* (mesh) follow-up
     Row("unblock",    "pm",            {Blocked("environment")}, {"ready", Blocked("limit")}),
-    Row("reject",     "pm",            {"verified"}, {"rework"}),
+    Row("reject",     "pm",            {"verified"}, {"rework", Blocked("awaiting_user")}),
     Row("ack",        "pm",            NonTerminal, {"unchanged"}),
     Row("close",      "pm",            {"verified"}, {"closed"}),
     Row("cancel",     "pm",            NonTerminal \cup {"cancelled"}, {"cancelled"}),
     Row("revalidate", "pm",            {"verified", "closed"}, {"unchanged"}),
-    Row("override",   "operator",      Created, Created) }
+    Row("override",   "operator",      Created, Created \ {Blocked("limit")}) }
 
 \* RowTo[<<verb, caller, from>>] = the states the table allows as `to` ({} = not listed); a constant
 RowTo == [k \in AllVerbs \X Callers \X (Created \cup {None}) |->
@@ -134,13 +132,17 @@ EmptyItem ==
    attempt |-> NoAttempt,
    retry |-> 0, environment_unblock |-> 0, next_start_free |-> FALSE,
    failure |-> NoFailure, failing_before |-> NoFailingBefore,
-   replies |-> {}, limit_at |-> 0,
-   parent |-> 0, children |-> {}, follows |-> 0,
+   replies |-> {}, limit_seq |-> 0,
+   parent |-> 0, children |-> {}, former_children |-> {}, follows |-> 0,
    revalidate |-> FALSE, evidence |-> NoEvidence]
 GhostInit == [starts |-> 0, unlocks |-> {}, own_verify |-> FALSE,
               flag_evidence |-> NoEvidence, cancelled_child |-> FALSE,
-              limit_entry |-> 0]   \* tick of the last blocked(limit) entry (limit_at is the recorded time)
-PaneIdle == [phase |-> "idle", owns |-> 0, item_id |-> 0, read_version |-> 0,
+              limit_entry |-> 0]   \* seq of the last blocked(limit) entry (limit_seq is the recorded value)
+\* section 8 (D76): the attempt-relevant fields the verify compare-and-set re-checks
+AttemptFields(rec) == [state |-> PS(rec), attempt |-> rec.attempt.id,
+                       contract_version |-> rec.contract_version, commit |-> rec.attempt.commit]
+NoFields == [state |-> "", attempt |-> 0, contract_version |-> 0, commit |-> 0]
+PaneIdle == [phase |-> "idle", owns |-> 0, item_id |-> 0, read_fields |-> NoFields,
              read_attempt |-> 0, dirty |-> FALSE, dirty_by |-> {}]
 NoStep == [kind |-> "init", verb |-> "", caller |-> "", pane |-> "", item_id |-> 0,
            from |-> "", to |-> "", refused |-> FALSE, why |-> "", reply |-> 0,
@@ -152,8 +154,8 @@ Init ==
   /\ item = [i \in Items |-> EmptyItem]
   /\ version = [i \in Items |-> 0]
   /\ config_hash = 1
-  /\ clock = 0
-  /\ events = [e \in 1..MaxEvents |-> [ts |-> 0, linked |-> FALSE]]
+  /\ seq = 0
+  /\ events = [e \in 1..MaxEvents |-> [seq |-> 0, linked |-> FALSE]]
   /\ live = [i \in Items |-> TRUE]
   /\ pane = [p \in Panes |-> PaneIdle]
   /\ ghost = [i \in Items |-> GhostInit]
@@ -162,13 +164,19 @@ Init ==
 
 -----------------------------------------------------------------------------
 (* Every applied verb is one lock-held write of the record (section 8): it  *)
-(* bumps `version` and marks dirty (ghost) every pane whose unlocked verify  *)
-(* read this item.  A refused verb records (caller, verb, reason) only.      *)
+(* bumps `version`.  For every pane whose unlocked verify read this item it  *)
+(* records the writing verb (ghost dirty_by) and whether the write changed   *)
+(* an attempt-relevant field (ghost dirty).  DirtyFor reads item', so it     *)
+(* follows the conjunct that sets item'.  A refused verb records (caller,    *)
+(* verb, reason) only.                                                       *)
 
 Write1(i, rec) == /\ item' = [item EXCEPT ![i] = rec]
                   /\ version' = [version EXCEPT ![i] = @ + 1]
 DirtyFor(S, v) == [p \in Panes |-> IF pane[p].phase = "computing" /\ pane[p].item_id \in S
-                                   THEN [pane[p] EXCEPT !.dirty = TRUE, !.dirty_by = @ \cup {v}]
+                                   THEN LET k == pane[p].item_id IN
+                                        [pane[p] EXCEPT
+                                           !.dirty = @ \/ AttemptFields(item'[k]) # AttemptFields(item[k]),
+                                           !.dirty_by = @ \cup {v}]
                                    ELSE pane[p]]
 StepRec(v, c, p, i, fromS, toS, refused, why) ==
   [kind |-> "verb", verb |-> v, caller |-> c, pane |-> p, item_id |-> i,
@@ -188,7 +196,25 @@ Refused(c, v, p, i, why) ==
 
 RefuseStep(c, v, i, why) ==
   /\ Refused(c, v, "", i, why)
-  /\ UNCHANGED <<item, version, config_hash, clock, events, live, pane, ghost>>
+  /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
+
+\* One write that also cancels the items in K (D66: the active children of a split parent) and moves
+\* every ready dependent of an item it cancels to blocked(awaiting_user) (D71, reason
+\* dependency_cancelled: the (mesh) dependency cancelled row, in the same write; D81 leaves no other way).
+ActiveChildren(i) == {c \in item[i].children : StateOf(c) \in NonTerminal}
+CascadeWrite(i, rec, K, lbl) ==
+  LET gone == K \cup (IF rec.state = "cancelled" THEN {i} ELSE {})
+      D == {j \in Items \ ({i} \cup K) : StateOf(j) = "ready" /\ item[j].depends \cap gone # {}}
+      W == {i} \cup K \cup D
+  IN /\ item' = [j \in Items |->
+                   IF j = i THEN rec
+                   ELSE IF j \in K THEN [item[j] EXCEPT !.blocked_reason = "none", !.state = "cancelled"]
+                   ELSE IF j \in D THEN [item[j] EXCEPT !.state = "blocked", !.blocked_reason = "awaiting_user"]
+                   ELSE item[j]]
+     /\ version' = [j \in Items |-> IF j \in W THEN version[j] + 1 ELSE version[j]]
+     /\ pane' = DirtyFor(W, lbl.verb)
+     /\ step' = lbl
+     /\ UNCHANGED refusals
 
 \* scenario scope: which verbs an item may use (children may be restricted)
 May(i, v) == IF item[i].parent = 0 THEN v \in ItemVerbs ELSE v \in ChildVerbs
@@ -207,47 +233,50 @@ New(i) ==
   /\ i \in NewItems /\ May(i, "new") /\ item[i].state = None
   /\ LET rec == [item[i] EXCEPT !.state = "draft"]
      IN Apply(i, rec, L("new", "pm", i, rec, ""))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 \* row: draft | slack watcher | (none) | draft | allowlisted user, ts dedup | none
 SlackDraft(i) ==
   /\ i \in NewItems /\ May(i, "draft") /\ item[i].state = None
   /\ LET rec == [item[i] EXCEPT !.state = "draft"]
      IN Apply(i, rec, L("draft", "slack watcher", i, rec, "top-level request"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
-NewReply(src, e, ts) ==
-  [ts |-> ts, source |-> src, event |-> e, acknowledged |-> FALSE, consumed |-> FALSE]
+\* a replies[] entry: mesh receipt seq (D74), source (slack ts / terminal event id: reference only)
+NewReply(src, e, s) ==
+  [seq |-> s, source |-> src, event |-> e, acknowledged |-> FALSE, consumed |-> FALSE]
 
 \* row: attach | slack watcher | any except closed, cancelled | unchanged | thread map; notifies the PM; never releases a block | none
+\* (mesh stamps the reply receipt with the next seq, D74)
 Attach(i) ==
   /\ May(i, "attach") /\ StateOf(i) \in NonTerminal
   /\ Cardinality(item[i].replies) < MaxReplies
-  /\ clock' = clock + 1
-  /\ LET rec == [item[i] EXCEPT !.replies = @ \cup {NewReply("slack", 0, clock + 1)}]
+  /\ seq' = seq + 1
+  /\ LET rec == [item[i] EXCEPT !.replies = @ \cup {NewReply("slack", 0, seq + 1)}]
      IN Apply(i, rec, L("attach", "slack watcher", i, rec, "thread reply"))
   /\ UNCHANGED <<config_hash, events, live, ghost>>
 
 \* not a table row (section 9a): the UserPromptSubmit hook in the PM pane runs
-\* `mesh event record --source terminal`; a lead pane records nothing.
+\* `mesh event record --source terminal`; a lead pane records nothing.  Mesh stamps the event with
+\* the next seq (D74).
 RecordEvent(e) ==
-  /\ events[e].ts = 0
-  /\ \A f \in 1..(e - 1) : events[f].ts # 0
-  /\ clock' = clock + 1
-  /\ events' = [events EXCEPT ![e].ts = clock + 1]
+  /\ events[e].seq = 0
+  /\ \A f \in 1..(e - 1) : events[f].seq # 0
+  /\ seq' = seq + 1
+  /\ events' = [events EXCEPT ![e].seq = seq + 1]
   /\ step' = EnvStep("hook: operator prompt recorded in the PM pane")
   /\ UNCHANGED <<item, version, config_hash, live, pane, ghost, refusals>>
 
 \* row: reply | pm | any except closed, cancelled | unchanged | cites an operator event id recorded by the PM-pane prompt hook (section 9a); attaches it as a reply; never releases a block (D64) | none
-\* (the reply's ts is the hook-recorded event time: freshness applies to it, section 9a)
+\* (the reply carries the event's mesh seq: freshness and single use apply to it, section 9a / D74)
 Reply(i, e) ==
   /\ May(i, "reply") /\ StateOf(i) \in NonTerminal
-  /\ IF events[e].ts # 0 /\ ~events[e].linked
+  /\ IF events[e].seq # 0 /\ ~events[e].linked
      THEN /\ Cardinality(item[i].replies) < MaxReplies
           /\ events' = [events EXCEPT ![e].linked = TRUE]
-          /\ LET rec == [item[i] EXCEPT !.replies = @ \cup {NewReply("terminal", e, events[e].ts)}]
+          /\ LET rec == [item[i] EXCEPT !.replies = @ \cup {NewReply("terminal", e, events[e].seq)}]
              IN Apply(i, rec, L("reply", "pm", i, rec, "operator answer from the PM terminal"))
-          /\ UNCHANGED <<config_hash, clock, live, ghost>>
+          /\ UNCHANGED <<config_hash, seq, live, ghost>>
      ELSE RefuseStep("pm", "reply", i, "unknown or reused event id")
 
 \* row: revise | pm | ready | draft | reason; next ready bumps the contract version | none
@@ -255,7 +284,7 @@ Revise(i) ==
   /\ May(i, "revise") /\ StateOf(i) = "ready"
   /\ LET rec == [item[i] EXCEPT !.state = "draft"]
      IN Apply(i, rec, L("revise", "pm", i, rec, "reason"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 RECURSIVE Closure(_, _)
 Closure(S, k) == IF k = 0 THEN S ELSE Closure(S \cup UNION {item[x].depends : x \in S}, k - 1)
@@ -264,10 +293,14 @@ DependsOk(i, D) ==
   /\ i \notin D                          \* no self-dependency
   /\ i \notin Closure(D, N)              \* no cycle through the recorded depends
 DependsChoices == IF WithDepends THEN SUBSET Items ELSE {{}}
+\* D81: ready, reassign and unblock refuse a cancelled dependency
+CancelledDepends(D) == \E d \in D : item[d].state = "cancelled"
+D81Why == "a dependency is cancelled (D81)"
 ReproResults(i) == IF i \in BugfixItems THEN {"fails", "passes", "not_runnable"} ELSE {"none"}
-FreshReplies(i) == {r \in item[i].replies : r.ts > item[i].limit_at /\ ~r.consumed}
-\* the time mesh records as limit_at when an item enters blocked(limit) at tick clock + 1
-LimitTimes == IF ClockTies THEN {t \in 0..(clock + 1) : t + 1 >= clock} ELSE {clock + 1}
+\* D63 / D74: fresh = its mesh seq is greater than limit_seq; single use = not consumed
+FreshReplies(i) == {r \in item[i].replies : r.seq > item[i].limit_seq /\ ~r.consumed}
+\* D74: the seq mesh stamps on a blocked(limit) entry and records as limit_seq (the next seq)
+LimitEntrySeq == seq + 1
 \* section 5 "way back" from rework through `ready`: conflict (PM revised scope/depends), ambiguity (revised criteria)
 ReadyRoute(i) == item[i].failure.class \in {"conflict", "ambiguity"}
 
@@ -279,13 +312,15 @@ ReadyRec(i, D) ==
                               repro |-> ReproHash(i)]
                         ELSE NoFailingBefore]
 
-\* row: ready | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, no self-dependency, no cycle; bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters
+\* row: ready | pm | draft, rework, blocked(awaiting_user), blocked(limit) | ready | contract + type inputs present; dependencies exist, none cancelled (D81), no self-dependency, no cycle; bugfix repro fails at the base commit (126/127, timeout or spawn error refused as not runnable); from rework/awaiting_user: class route (section 5); from blocked(limit): revised contract (version +1) + fresh unconsumed user reply | leaving blocked(limit) resets both counters
 Ready(i) ==
   /\ May(i, "ready")
   /\ StateOf(i) \in {"draft", "rework", Blocked("awaiting_user"), Blocked("limit")}
   /\ \E D \in DependsChoices, repro \in ReproResults(i) :
        IF ~DependsOk(i, D)
        THEN RefuseStep("pm", "ready", i, "depends: unknown id, self-dependency or cycle")
+       ELSE IF CancelledDepends(D)
+       THEN RefuseStep("pm", "ready", i, D81Why)
        ELSE IF StateOf(i) = "rework" /\ ~ReadyRoute(i)
        THEN RefuseStep("pm", "ready", i, "class route")
        ELSE IF repro = "passes"
@@ -301,18 +336,18 @@ Ready(i) ==
                                  !.next_start_free = TRUE,
                                  !.replies = (@ \ {r}) \cup {[r EXCEPT !.consumed = TRUE]}]
                    IN /\ Apply(i, rec, [L("ready", "pm", i, rec, "limit resume: revised contract + fresh reply")
-                                          EXCEPT !.reply = r.ts])
-                      /\ ghost' = [ghost EXCEPT ![i].starts = 0, ![i].unlocks = @ \cup {r.ts}]
-                      /\ UNCHANGED <<config_hash, clock, events, live>>
+                                          EXCEPT !.reply = r.seq])
+                      /\ ghost' = [ghost EXCEPT ![i].starts = 0, ![i].unlocks = @ \cup {r.seq}]
+                      /\ UNCHANGED <<config_hash, seq, events, live>>
        ELSE LET rec == ReadyRec(i, D)
             IN /\ Apply(i, rec, L("ready", "pm", i, rec, "contract complete"))
-               /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+               /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 \* row: dispatch | pm | ready | ready | assigned role; message-ref | none
 Dispatch(i) ==
   /\ May(i, "dispatch") /\ StateOf(i) = "ready"
   /\ Apply(i, item[i], L("dispatch", "pm", i, item[i], "message-ref"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 DependsSatisfied(i) == \A d \in item[i].depends : item[d].state \in {"verified", "closed"}
 
@@ -321,21 +356,20 @@ Start(i, p) ==
   /\ May(i, "start") /\ StateOf(i) = "ready" /\ live[i] /\ Idle(p)
   /\ IF ~DependsSatisfied(i)
      THEN /\ Refused(Lead, "start", p, i, "dependency not verified or closed")
-          /\ UNCHANGED <<item, version, config_hash, clock, events, live, pane, ghost>>
+          /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
      ELSE LET counted == item[i].attempt.id > 0 /\ ~item[i].next_start_free
               retry == IF counted THEN item[i].retry + 1 ELSE item[i].retry
           IN IF retry > RetryLimit
-             THEN \E lt \in LimitTimes :
-                  LET rec == [item[i] EXCEPT !.state = "blocked", !.blocked_reason = "limit",
-                                !.retry = retry, !.limit_at = lt,
+             THEN LET rec == [item[i] EXCEPT !.state = "blocked", !.blocked_reason = "limit",
+                                !.retry = retry, !.limit_seq = LimitEntrySeq,
                                 !.failure = [class |-> "limit", reason |-> "retry"]]
-                  IN /\ clock' = clock + 1
+                  IN /\ seq' = seq + 1
                      /\ Write1(i, rec)
                      /\ pane' = DirtyFor({i}, "start")
                      /\ step' = [StepRec("start", Lead, p, i, StateOf(i), PS(rec), FALSE,
                                          "mesh: retry over the limit; Slack question")
                                  EXCEPT !.limit_by = "mesh counter"]
-                     /\ ghost' = [ghost EXCEPT ![i].limit_entry = clock + 1]
+                     /\ ghost' = [ghost EXCEPT ![i].limit_entry = seq + 1]
                      /\ UNCHANGED <<config_hash, events, live, refusals>>
              ELSE LET rec == [item[i] EXCEPT !.state = "running", !.retry = retry,
                                 !.next_start_free = FALSE,
@@ -349,7 +383,7 @@ Start(i, p) ==
                      /\ step' = StepRec("start", Lead, p, i, StateOf(i), PS(rec), FALSE,
                                         IF counted THEN "retry +1" ELSE "not counted")
                      /\ ghost' = [ghost EXCEPT ![i].starts = @ + 1]
-                     /\ UNCHANGED <<config_hash, clock, events, live, refusals>>
+                     /\ UNCHANGED <<config_hash, seq, events, live, refusals>>
 
 \* row: submit | lead (own role) | running | verifying | current attempt id; changed commit | none
 Submit(i, p) ==
@@ -359,9 +393,9 @@ Submit(i, p) ==
           IN /\ Write1(i, rec)
              /\ pane' = DirtyFor({i}, "submit")
              /\ step' = StepRec("submit", Lead, p, i, StateOf(i), PS(rec), FALSE, "changed commit")
-             /\ UNCHANGED <<config_hash, clock, events, live, ghost, refusals>>
+             /\ UNCHANGED <<config_hash, seq, events, live, ghost, refusals>>
      ELSE /\ Refused(Lead, "submit", p, i, "older attempt id")
-          /\ UNCHANGED <<item, version, config_hash, clock, events, live, pane, ghost>>
+          /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
 
 \* The contract-version half of InputsUnchanged and FailingBeforeOk are structurally implied
 \* here (both change only at `ready`, which running/verifying cannot take); README, inv 6.
@@ -371,12 +405,13 @@ InputsUnchanged(i) ==
 FailingBeforeOk(i) ==
   i \notin BugfixItems
     \/ item[i].failing_before = [contract_version |-> item[i].contract_version, repro |-> ReproHash(i)]
+\* a passing verification binds the evidence and clears a revalidate flag (D69)
 VerifiedRec(i, run) ==
-  [item[i] EXCEPT !.state = "verified",
+  [item[i] EXCEPT !.state = "verified", !.revalidate = FALSE,
      !.evidence = [run |-> run, commit |-> item[i].attempt.commit,
                    contract_version |-> item[i].contract_version, config_hash |-> config_hash]]
 
-\* row: verify | lead (own role); mesh runs commands | verifying | verified | all commands pass on the submitted commit; type evidence present; bugfix failing-before matches the current contract version and repro hash; config hash and inputs unchanged, else refused as inputs_changed | none
+\* row: verify | lead (own role); mesh runs commands | verifying | verified | all commands pass on the submitted commit; type evidence present; bugfix failing-before matches the current contract version and repro hash; config hash and inputs unchanged, else refused as inputs_changed; clears a revalidate flag (D69) | none
 \* (atomic encoding; commands that fail lead to `fail`, so only passing runs are modelled here)
 Verify(i) ==
   /\ Panes = {} /\ May(i, "verify") /\ live[i]
@@ -385,26 +420,29 @@ Verify(i) ==
      THEN LET rec == VerifiedRec(i, "attempt")
           IN /\ Apply(i, rec, L("verify", Lead, i, rec, "all commands pass on the submitted commit"))
              /\ ghost' = [ghost EXCEPT ![i].own_verify = TRUE]
-             /\ UNCHANGED <<config_hash, clock, events, live>>
+             /\ UNCHANGED <<config_hash, seq, events, live>>
      ELSE RefuseStep(Lead, "verify", i, "inputs_changed")
+
+\* the reason a compare-and-set mismatch is recorded with (section 8)
+StaleWhy == "stale result discarded: attempt-relevant field or attempt mismatch"
 
 \* same row, section 8 encoding: lock held to read-check, commands run unlocked, ...
 VerifyRead(i, p) ==
   /\ p \in Panes /\ May(i, "verify") /\ live[i] /\ pane[p].phase = "idle"
   /\ StateOf(i) = "verifying" /\ item[i].attempt.commit # MergedCommit /\ Owns(p, i)
   /\ pane' = [pane EXCEPT ![p] = [@ EXCEPT !.phase = "computing", !.item_id = i,
-                                   !.read_version = version[i],
+                                   !.read_fields = AttemptFields(item[i]),
                                    !.read_attempt = item[i].attempt.id, !.dirty = FALSE,
                                    !.dirty_by = {}]]
   /\ step' = [StepRec("verify", Lead, p, i, StateOf(i), StateOf(i), FALSE,
                       "read-check under the lock; commands start unlocked")
               EXCEPT !.kind = "read"]
-  /\ UNCHANGED <<item, version, config_hash, clock, events, live, ghost, refusals>>
+  /\ UNCHANGED <<item, version, config_hash, seq, events, live, ghost, refusals>>
 
-\* ... and the write re-checks the record version and the attempt id (compare-and-set); a mismatch discards the result as stale
+\* ... and the write re-checks the attempt-relevant fields (state, current attempt id, contract version, submitted commit) and the attempt id (compare-and-set); a mismatch discards the result as stale.  Reply-side writes (attach, reply, ack) do not touch these fields and do not discard a running verification (D76)
 VerifyWrite(i, p) ==
   /\ p \in Panes /\ live[i] /\ pane[p].phase = "computing" /\ pane[p].item_id = i
-  /\ IF version[i] = pane[p].read_version /\ item[i].attempt.id = pane[p].read_attempt
+  /\ IF AttemptFields(item[i]) = pane[p].read_fields /\ item[i].attempt.id = pane[p].read_attempt
      THEN IF InputsUnchanged(i) /\ FailingBeforeOk(i)
           THEN LET rec == VerifiedRec(i, "attempt")
                IN /\ Write1(i, rec)
@@ -412,13 +450,13 @@ VerifyWrite(i, p) ==
                   /\ step' = StepRec("verify", Lead, p, i, StateOf(i), PS(rec), FALSE,
                                      "compare-and-set write")
                   /\ ghost' = [ghost EXCEPT ![i].own_verify = TRUE]
-                  /\ UNCHANGED <<config_hash, clock, events, live, refusals>>
+                  /\ UNCHANGED <<config_hash, seq, events, live, refusals>>
           ELSE /\ pane' = [pane EXCEPT ![p] = [PaneIdle EXCEPT !.owns = pane[p].owns]]
                /\ Refused(Lead, "verify", p, i, "inputs_changed")
-               /\ UNCHANGED <<item, version, config_hash, clock, events, live, ghost>>
+               /\ UNCHANGED <<item, version, config_hash, seq, events, live, ghost>>
      ELSE /\ pane' = [pane EXCEPT ![p] = [PaneIdle EXCEPT !.owns = pane[p].owns]]
-          /\ Refused(Lead, "verify", p, i, "stale result discarded: version or attempt mismatch")
-          /\ UNCHANGED <<item, version, config_hash, clock, events, live, ghost>>
+          /\ Refused(Lead, "verify", p, i, StaleWhy)
+          /\ UNCHANGED <<item, version, config_hash, seq, events, live, ghost>>
 
 \* section 5: where each failure class goes
 RouteOf(cls) ==
@@ -444,31 +482,34 @@ Fail(i, c, p, cls, why) ==
              /\ step' = [StepRec("fail", c, p, i, StateOf(i), PS(rec), FALSE,
                                  IF why = "too_large" THEN cls \o ", reason too_large" ELSE cls)
                          EXCEPT !.limit_by = IF cls = "limit" THEN c ELSE ""]
-             /\ UNCHANGED <<config_hash, clock, events, live, ghost, refusals>>
+             /\ UNCHANGED <<config_hash, seq, events, live, ghost, refusals>>
      ELSE /\ Refused(c, "fail", p, i, IF Owns(p, i) THEN "class not allowed for this caller"
                                                    ELSE "older attempt id")
-          /\ UNCHANGED <<item, version, config_hash, clock, events, live, pane, ghost>>
+          /\ UNCHANGED <<item, version, config_hash, seq, events, live, pane, ghost>>
 
-\* row: reassign | pm | rework | ready | class route (section 5) | none (counted at start)
+\* row: reassign | pm | rework | ready | class route (section 5); no dependency cancelled (D81) | none (counted at start)
 Reassign(i) ==
   /\ May(i, "reassign") /\ StateOf(i) = "rework"
-  /\ IF item[i].failure.class = "defect"
+  /\ IF CancelledDepends(item[i].depends)
+     THEN RefuseStep("pm", "reassign", i, D81Why)
+     ELSE IF item[i].failure.class = "defect"
      THEN LET rec == [item[i] EXCEPT !.state = "ready", !.failure = NoFailure]
           IN /\ Apply(i, rec, L("reassign", "pm", i, rec, "class route: defect"))
-             /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+             /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
      ELSE RefuseStep("pm", "reassign", i, "class route")
 
-\* row: split | pm | rework (conflict, reason too_large) | blocked(children) | at least two child drafts linked by parent | none
+\* row: split | pm | rework (conflict, reason too_large) | blocked(children) | at least two child drafts linked by parent; already-cancelled children move to former_children[] (D67); failures[] kept (D75) | none
 \* (bound: exactly two children, in the two lowest free child slots)
 Lowest(S) == CHOOSE x \in S : \A y \in S : x <= y
 FreeSlots == {c \in ChildSlots : item[c].state = None}
 Split(i) ==
-  LET C == {Lowest(FreeSlots), Lowest(FreeSlots \ {Lowest(FreeSlots)})} IN
+  LET C == {Lowest(FreeSlots), Lowest(FreeSlots \ {Lowest(FreeSlots)})}
+      gone == {c \in item[i].children : item[c].state = "cancelled"}
+  IN
   /\ May(i, "split") /\ StateOf(i) = "rework" /\ Cardinality(FreeSlots) >= 2
   /\ IF item[i].failure = [class |-> "conflict", reason |-> "too_large"]
      THEN LET rec == [item[i] EXCEPT !.state = "blocked", !.blocked_reason = "children",
-                        !.children = @ \cup C,
-                        !.failure = IF SplitFailure = "consumed" THEN NoFailure ELSE @]
+                        !.children = (@ \ gone) \cup C, !.former_children = @ \cup gone]
           IN /\ item' = [j \in Items |->
                            IF j = i THEN rec
                            ELSE IF j \in C THEN [EmptyItem EXCEPT !.state = "draft", !.parent = i]
@@ -477,10 +518,10 @@ Split(i) ==
              /\ pane' = DirtyFor(C \cup {i}, "split")
              /\ step' = L("split", "pm", i, rec, "child drafts linked by parent")
              /\ ghost' = [ghost EXCEPT ![i].own_verify = FALSE]
-             /\ UNCHANGED <<config_hash, clock, events, live, refusals>>
+             /\ UNCHANGED <<config_hash, seq, events, live, refusals>>
      ELSE RefuseStep("pm", "split", i, "class route: needs conflict with reason too_large")
 
-\* row: (mesh) | mesh | blocked(children) | verifying | every child closed; parent's own verification runs; failure -> rework (defect); a cancelled child -> rework | none
+\* row: (mesh) children done | mesh | blocked(children) | verifying | every linked child closed | none
 MeshChildrenClosed(i) ==
   /\ May(i, "mesh") /\ StateOf(i) = Blocked("children")
   /\ \A c \in item[i].children : item[c].state = "closed"
@@ -488,90 +529,90 @@ MeshChildrenClosed(i) ==
                    !.attempt = [@ EXCEPT !.commit = MergedCommit,
                                          !.contract_version = item[i].contract_version,
                                          !.config_hash = config_hash]]
-     IN Apply(i, rec, L("mesh", "mesh", i, rec, "every child closed"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+     IN Apply(i, rec, L("mesh", "mesh", i, rec, "every linked child closed"))
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
-\* not a table row (structural finding G8): the (mesh) row's guard runs the parent's own
-\* verification at the merged commit (section 7), "failure -> rework (defect)", but no row
-\* moves a split parent out of verifying (`verify`/`fail` are lead/pm rows for an attempt).
+\* row: (mesh) parent verify pass | mesh | verifying (split parent) | verified | the parent's own verification commands pass on the merged commit; evidence bound as for verify; clears a revalidate flag (D72, D69) | none
+\* row: (mesh) parent verify fail | mesh | verifying (split parent) | rework | failure record class defect (D72) | none
 MeshParentVerify(i) ==
   /\ May(i, "mesh") /\ StateOf(i) = "verifying" /\ item[i].attempt.commit = MergedCommit
   /\ \/ /\ InputsUnchanged(i)
         /\ LET rec == VerifiedRec(i, "merged")
            IN Apply(i, rec, L("mesh", "mesh", i, rec, "parent's own verification passed"))
         /\ ghost' = [ghost EXCEPT ![i].own_verify = TRUE]
-        /\ UNCHANGED <<config_hash, clock, events, live>>
+        /\ UNCHANGED <<config_hash, seq, events, live>>
      \/ /\ LET rec == [item[i] EXCEPT !.state = "rework",
                          !.failure = [class |-> "defect", reason |-> "none"]]
            IN Apply(i, rec, L("mesh", "mesh", i, rec, "parent's own verification failed"))
-        /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+        /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
-\* same (mesh) row: a cancelled child -> rework, with no failure of its own: the parent's latest
-\* record is the split's conflict/too_large (SplitFailure "kept"), or none ("consumed", G2a).
-\* O3-8 (undecided): "stay_linked" (as written) keeps the cancelled child in children[]; "unlink" removes it.
+\* row: (mesh) child cancelled | mesh | blocked(children) | rework | a linked child is cancelled; remaining active children of the parent -> cancelled (reason parent_rework); the cancelled child is unlinked to former_children[] at the next split (D66, D67) | none
+\* (no failure record of its own: the parent's latest record stays the split's conflict/too_large, D75)
 MeshCancelledChild(i) ==
   /\ May(i, "mesh") /\ StateOf(i) = Blocked("children")
   /\ \E c \in item[i].children : item[c].state = "cancelled"
-  /\ LET gone == {c \in item[i].children : item[c].state = "cancelled"}
-         rec == [item[i] EXCEPT !.state = "rework", !.blocked_reason = "none",
-                   !.children = IF O38 = "unlink" THEN @ \ gone ELSE @]
-     IN Apply(i, rec, L("mesh", "mesh", i, rec, "a cancelled child"))
+  /\ LET rec == [item[i] EXCEPT !.state = "rework", !.blocked_reason = "none"]
+     IN CascadeWrite(i, rec, ActiveChildren(i), L("mesh", "mesh", i, rec,
+                       "a linked child is cancelled; remaining active children cancelled (parent_rework)"))
   /\ ghost' = [ghost EXCEPT ![i].cancelled_child = TRUE]
-  /\ UNCHANGED <<config_hash, clock, events, live>>
+  /\ UNCHANGED <<config_hash, seq, events, live>>
 
-EnvOverLimit(i, e, lt) ==
+\* row: (mesh) dependency cancelled | mesh | ready | blocked(awaiting_user) | an item in depends was cancelled; reason dependency_cancelled (D71) | none
+\* (no action of its own: a ready item can depend on a cancelled item only through the write that cancels
+\* it, since ready, reassign and unblock refuse a cancelled dependency (D81); CascadeWrite moves it there)
+
+\* row: (mesh) follow-up | mesh | closed | unchanged | a Slack thread reply (section 9) or a revalidate flag on a closed item creates one new draft with follows (D70) | none
+\* (the new draft j is the row's declared side effect; one per closed item: "a burst ... one item")
+FollowUp(i, j, why) ==
+  /\ why \in FollowUpOn /\ May(i, "mesh") /\ StateOf(i) = "closed"
+  /\ (why = "revalidate flag" => item[i].revalidate)
+  /\ j \in ChildSlots /\ item[j].state = None
+  /\ \A k \in Items : item[k].follows # i
+  /\ item' = [item EXCEPT ![j] = [EmptyItem EXCEPT !.state = "draft", !.follows = i]]
+  /\ version' = [version EXCEPT ![j] = @ + 1]
+  /\ pane' = DirtyFor({j}, "mesh")
+  /\ step' = StepRec("mesh", "mesh", "", i, "closed", "closed", FALSE,
+                     why \o " on a closed item -> new draft with follows")
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost, refusals>>
+
+EnvOverLimit(i, e) ==
   [item[i] EXCEPT !.state = "blocked", !.blocked_reason = "limit", !.environment_unblock = e,
-     !.limit_at = lt, !.failure = [class |-> "limit", reason |-> "environment"]]
+     !.limit_seq = LimitEntrySeq, !.failure = [class |-> "limit", reason |-> "environment"]]
 UnblockedRec(i, e) ==
   [item[i] EXCEPT !.state = "ready", !.blocked_reason = "none", !.environment_unblock = e,
      !.next_start_free = TRUE, !.failure = NoFailure]
 
-\* row: unblock | pm | blocked(environment) | ready | precheck passes | environment +1 (see open item O3-9); over its limit (default 3) -> blocked(limit) + Slack question
-\* O3-9 (undecided): "unblock_pass" = the table counts a passing unblock; "precheck_refused" = the registry's refused precheck
+\* row: unblock | pm | blocked(environment) | ready | precheck passes; no dependency cancelled (D81); a refused precheck is a guard refusal and writes nothing to the item (D68) | environment +1 per passing unblock (D68); over its limit (default 3) -> blocked(limit) + Slack question
 Unblock(i, precheck) ==
   /\ May(i, "unblock") /\ StateOf(i) = Blocked("environment")
-  /\ LET e == item[i].environment_unblock + 1 IN
-     IF precheck = "passes"
-     THEN IF O39 = "unblock_pass" /\ e > EnvLimit
-          THEN \E lt \in LimitTimes :
-               LET rec == EnvOverLimit(i, e, lt)
-               IN /\ clock' = clock + 1
+  /\ IF precheck = "passes" /\ CancelledDepends(item[i].depends)
+     THEN RefuseStep("pm", "unblock", i, D81Why)
+     ELSE IF precheck = "passes"
+     THEN LET e == item[i].environment_unblock + 1 IN
+          IF e > EnvLimit
+          THEN LET rec == EnvOverLimit(i, e)
+               IN /\ seq' = seq + 1
                   /\ Apply(i, rec, [L("unblock", "pm", i, rec,
                                       "mesh: environment unblock over the limit; Slack question")
                                     EXCEPT !.limit_by = "mesh counter"])
-                  /\ ghost' = [ghost EXCEPT ![i].limit_entry = clock + 1]
+                  /\ ghost' = [ghost EXCEPT ![i].limit_entry = seq + 1]
                   /\ UNCHANGED <<config_hash, events, live>>
-          ELSE LET rec == UnblockedRec(i, IF O39 = "unblock_pass" THEN e
-                                          ELSE item[i].environment_unblock)
-               IN /\ Apply(i, rec, L("unblock", "pm", i, rec, "precheck passes"))
-                  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
-     ELSE IF O39 = "unblock_pass"
-          THEN RefuseStep("pm", "unblock", i, "precheck refused")
-          ELSE \E lt \in LimitTimes :
-               LET rec == IF e > EnvLimit THEN EnvOverLimit(i, e, lt)
-                          ELSE [item[i] EXCEPT !.environment_unblock = e]
-               IN /\ Write1(i, rec)
-                  /\ clock' = IF e > EnvLimit THEN clock + 1 ELSE clock
-                  /\ pane' = DirtyFor({i}, "unblock")
-                  /\ step' = [StepRec("unblock", "pm", "", i, StateOf(i), PS(rec), TRUE,
-                                      IF e > EnvLimit
-                                      THEN "precheck refused; environment +1; mesh: over the limit"
-                                      ELSE "precheck refused; environment +1")
-                              EXCEPT !.limit_by = IF e > EnvLimit THEN "mesh counter" ELSE ""]
-                  /\ refusals' = [caller |-> "pm", verb |-> "unblock", item_id |-> i,
-                                  reason |-> step'.why]
-                  /\ ghost' = IF e > EnvLimit THEN [ghost EXCEPT ![i].limit_entry = clock + 1] ELSE ghost
-                  /\ UNCHANGED <<config_hash, events, live>>
+          ELSE LET rec == UnblockedRec(i, e)
+               IN /\ Apply(i, rec, L("unblock", "pm", i, rec, "precheck passes; environment +1"))
+                  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
+     ELSE RefuseStep("pm", "unblock", i, "precheck refused")
 
-\* row: reject | pm | verified | rework | failure record (class from the reply, or defect for a revalidate flag) | none
+\* row: reject | pm | verified | rework, or blocked(awaiting_user) for --class ambiguity | --class required (defect, conflict, ambiguity; defect for a revalidate flag); failure record (D65) | none
+\* (the trigger stays an attached reply, any of the three classes, or a revalidate flag, class defect)
 Reject(i, cls) ==
   /\ May(i, "reject") /\ StateOf(i) = "verified"
   /\ \/ cls \in {"defect", "conflict", "ambiguity"} /\ item[i].replies # {}
      \/ cls = "defect" /\ item[i].revalidate
-  /\ LET rec == [item[i] EXCEPT !.state = "rework", !.failure = [class |-> cls, reason |-> "none"]]
+  /\ LET rec == [item[i] EXCEPT !.state = RouteOf(cls).state, !.blocked_reason = RouteOf(cls).blocked_reason,
+                   !.failure = [class |-> cls, reason |-> "none"]]
      IN Apply(i, rec, L("reject", "pm", i, rec, cls))
   /\ ghost' = [ghost EXCEPT ![i].own_verify = FALSE]
-  /\ UNCHANGED <<config_hash, clock, events, live>>
+  /\ UNCHANGED <<config_hash, seq, events, live>>
 
 \* row: ack | pm | any non-terminal state with attached replies | unchanged | marks replies acknowledged | none
 Ack(i) ==
@@ -579,7 +620,7 @@ Ack(i) ==
   /\ \E r \in item[i].replies : ~r.acknowledged
   /\ LET rec == [item[i] EXCEPT !.replies = {[r EXCEPT !.acknowledged = TRUE] : r \in @}]
      IN Apply(i, rec, L("ack", "pm", i, rec, "replies acknowledged"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 NoUnacknowledged(i) == \A r \in item[i].replies : r.acknowledged
 
@@ -589,51 +630,34 @@ Close(i) ==
   /\ IF NoUnacknowledged(i) /\ ~item[i].revalidate
      THEN LET rec == [item[i] EXCEPT !.state = "closed"]
           IN /\ Apply(i, rec, L("close", "pm", i, rec, "accepted by the PM"))
-             /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+             /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
      ELSE RefuseStep("pm", "close", i, "unacknowledged replies or revalidate flag")
 
-\* row: cancel | pm | any except closed | cancelled | reason | none
+\* row: cancel | pm | any except closed | cancelled | reason; on a split parent its active children -> cancelled (reason parent_cancelled, D66); dependents in ready -> blocked(awaiting_user) (D71) | none
 \* (cancel on an already cancelled item is listed but changes nothing; not modelled as a step)
 Cancel(i) ==
   /\ May(i, "cancel") /\ StateOf(i) \in NonTerminal
   /\ LET rec == [item[i] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]
-     IN Apply(i, rec, L("cancel", "pm", i, rec, "reason"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
+     IN CascadeWrite(i, rec, ActiveChildren(i), L("cancel", "pm", i, rec, "reason"))
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
-\* row: revalidate | pm (integration gate) | verified, closed | unchanged (flag) | fingerprint re-check; flag on a closed item -> PM opens a follow-up draft | none
+\* row: revalidate | pm (integration gate) | verified, closed | unchanged (flag) | fingerprint re-check; flag on a closed item -> (mesh) follow-up row (D70) | none
 \* (a re-check that finds no drift changes nothing and is not modelled)
 Revalidate(i) ==
   /\ May(i, "revalidate") /\ StateOf(i) \in {"verified", "closed"} /\ ~item[i].revalidate
   /\ LET rec == [item[i] EXCEPT !.revalidate = TRUE]
      IN Apply(i, rec, L("revalidate", "pm", i, rec, "fingerprint re-check found drift"))
   /\ ghost' = [ghost EXCEPT ![i].flag_evidence = item[i].evidence]
-  /\ UNCHANGED <<config_hash, clock, events, live>>
+  /\ UNCHANGED <<config_hash, seq, events, live>>
 
-\* row: override | operator only (ask rule) | any | any | actor + reason recorded | none
-\* Finding F1: this row can enter blocked(limit), against invariant 4 and section 5 ("mesh
-\* only"); the design does not say override is exempt, so it is not (run tablewalk-f1).
+\* row: override | operator only (ask rule) | any | any except blocked(limit) (D73) | actor + reason recorded | none
 Override(i, t) ==
-  /\ WithOverride /\ StateOf(i) \in Created /\ t \in Created \ {StateOf(i)}
+  /\ WithOverride /\ StateOf(i) \in Created /\ t \in Created \ {StateOf(i), Blocked("limit")}
   /\ LET rec == IF t \in {Blocked(r) : r \in Reasons}
                 THEN [item[i] EXCEPT !.state = "blocked", !.blocked_reason = ReasonOf(t)]
                 ELSE [item[i] EXCEPT !.state = t, !.blocked_reason = "none"]
      IN Apply(i, rec, L("override", "operator", i, rec, "actor + reason recorded"))
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost>>
-
-\* not a table row (structural finding G5; section 1 lists "follow-up" as a way into draft): a new
-\* draft j with `follows` = the closed item i, by the slack watcher for a thread reply (section 9,
-\* D41) or by the pm for a revalidate flag (D60).  One per closed item ("a burst ... one item").
-FollowUp(i, j, c) ==
-  /\ c \in FollowUpBy /\ StateOf(i) = "closed" /\ (c = "pm" => item[i].revalidate)
-  /\ j \in ChildSlots /\ item[j].state = None
-  /\ \A k \in Items : item[k].follows # i
-  /\ item' = [item EXCEPT ![j] = [EmptyItem EXCEPT !.state = "draft", !.follows = i]]
-  /\ version' = [version EXCEPT ![j] = @ + 1]
-  /\ pane' = DirtyFor({j}, FollowUpVerb)
-  /\ step' = StepRec(FollowUpVerb, c, "", i, "closed", "closed", FALSE,
-                     IF c = "pm" THEN "revalidate flag on a closed item -> PM opens a follow-up draft"
-                     ELSE "thread reply on a closed item -> new draft with follows")
-  /\ UNCHANGED <<config_hash, clock, events, live, ghost, refusals>>
+  /\ UNCHANGED <<config_hash, seq, events, live, ghost>>
 
 \* section 4 preamble / invariant 1: unlisted verb x caller x state combinations are refused and recorded
 Refuse(i, v, c) ==
@@ -645,17 +669,17 @@ EditConfig ==
   /\ config_hash < 1 + ConfigEdits
   /\ config_hash' = config_hash + 1
   /\ step' = EnvStep("verification config edited (commands or required evidence)")
-  /\ UNCHANGED <<item, version, clock, events, live, pane, ghost, refusals>>
+  /\ UNCHANGED <<item, version, seq, events, live, pane, ghost, refusals>>
 LeadDown(i) ==
   /\ LeadLoss /\ live[i] /\ StateOf(i) \in {"running", "verifying"}
   /\ live' = [live EXCEPT ![i] = FALSE]
   /\ step' = EnvStep("assigned lead pane absent or dead")
-  /\ UNCHANGED <<item, version, config_hash, clock, events, pane, ghost, refusals>>
+  /\ UNCHANGED <<item, version, config_hash, seq, events, pane, ghost, refusals>>
 LeadUp(i) ==
   /\ LeadLoss /\ ~live[i]
   /\ live' = [live EXCEPT ![i] = TRUE]
   /\ step' = EnvStep("lead pane live again")
-  /\ UNCHANGED <<item, version, config_hash, clock, events, pane, ghost, refusals>>
+  /\ UNCHANGED <<item, version, config_hash, seq, events, pane, ghost, refusals>>
 
 \* Cheap guards come before each quantifier: TLC does not enumerate parameters of disabled actions.
 Next ==
@@ -677,7 +701,7 @@ Next ==
        \/ Ack(i) \/ Close(i) \/ Cancel(i) \/ Revalidate(i)
        \/ MaxEvents > 0 /\ \E e \in 1..MaxEvents : Reply(i, e)
        \/ WithOverride /\ \E t \in Created : Override(i, t)
-       \/ FollowUpBy # {} /\ StateOf(i) = "closed" /\ \E j \in Items, c \in FollowUpBy : FollowUp(i, j, c)
+       \/ FollowUpOn # {} /\ StateOf(i) = "closed" /\ \E j \in Items, w \in FollowUpOn : FollowUp(i, j, w)
        \/ WithRefuse /\ \E v \in AllVerbs, c \in Callers : Refuse(i, v, c)
        \/ LeadLoss /\ (LeadDown(i) \/ LeadUp(i))
   \/ MaxEvents > 0 /\ \E e \in 1..MaxEvents : RecordEvent(e)
@@ -687,7 +711,7 @@ Spec == Init /\ [][Next]_vars
 
 \* exploration bounds (TLC still checks the first state past a bound)
 Bounds ==
-  /\ clock <= MaxClock
+  /\ seq <= MaxSeq
   /\ \A i \in Items : /\ item[i].contract_version <= MaxContractVersion
                       /\ item[i].attempt.id <= MaxAttempts
                       /\ (Panes # {} => version[i] <= MaxVersion)
@@ -695,7 +719,7 @@ Bounds ==
 
 \* state fingerprint: `step` and `refusals` are labels; `version` matters only with panes
 View == <<item, IF Panes = {} THEN 0 ELSE version,
-          config_hash, clock, events, live, pane, ghost>>
+          config_hash, seq, events, live, pane, ghost>>
 
 -----------------------------------------------------------------------------
 (* Properties; invariant numbers are section 10's.  Where each is checked:  *)
@@ -712,33 +736,37 @@ TypeOK ==
        /\ item[i].retry \in Nat /\ item[i].environment_unblock \in Nat
        /\ item[i].failure.class \in Classes \cup {"none"}
        /\ item[i].depends \subseteq Items /\ item[i].children \subseteq Items
+       /\ item[i].former_children \subseteq Items /\ item[i].children \cap item[i].former_children = {}
        /\ Cardinality(item[i].replies) <= MaxReplies
 
 \* Invariant 1, part 1: every change of an item record is a section-4 row, read off the state diff
 \* (the step's verb and caller with the item's actual state before and after, not its labels).  A
 \* refused request may not move the state (its field writes: GuardRefusedUnchanged).  Declared side
-\* effects on other items: split's child drafts; the follow-up draft (once a row lists it, G5).
+\* effects on other items: split's child drafts; the follow-up draft of the (mesh) follow-up row;
+\* the cascade cancel of a split parent's active children (cancel row, (mesh) child cancelled row,
+\* D66) and of ready dependents of a cancelled item ((mesh) dependency cancelled row, D71).
 Changed(i) == item'[i] # item[i] \/ version'[i] # version[i]
 RowStep(i) ==
   /\ step'.kind = "verb" /\ step'.item_id = i
   /\ \/ ~step'.refused /\ RowAllows(step'.verb, step'.caller, StateOf(i), PS(item'[i]))
      \/ step'.refused /\ Listed(step'.verb, step'.caller, StateOf(i))
         /\ PS(item'[i]) \in RowTo[<<step'.verb, step'.caller, StateOf(i)>>] \cup {StateOf(i)}
+NewlyCancelled == {d \in Items : item'[d].state = "cancelled" /\ item[d].state # "cancelled"}
 SideEffect(i) ==
   LET k == step'.item_id IN
   /\ step'.kind = "verb" /\ ~step'.refused /\ k \in Items /\ k # i
   /\ RowAllows(step'.verb, step'.caller, StateOf(k), PS(item'[k]))
   /\ \/ /\ step'.verb = "split" /\ item[i].state = None
         /\ item'[i] = [EmptyItem EXCEPT !.state = "draft", !.parent = k]
-     \/ /\ step'.verb = FollowUpVerb /\ item[i].state = None
+     \/ /\ step'.verb = "mesh" /\ StateOf(k) = "closed" /\ item[i].state = None
         /\ item'[i] = [EmptyItem EXCEPT !.state = "draft", !.follows = k]
+     \/ /\ step'.verb \in {"cancel", "mesh"} /\ i \in item[k].children /\ StateOf(i) \in NonTerminal
+        /\ item'[i] = [item[i] EXCEPT !.state = "cancelled", !.blocked_reason = "none"]
+     \/ /\ RowAllows("mesh", "mesh", StateOf(i), Blocked("awaiting_user"))
+        /\ StateOf(i) = "ready" /\ item[i].depends \cap NewlyCancelled # {}
+        /\ item'[i] = [item[i] EXCEPT !.state = "blocked", !.blocked_reason = "awaiting_user"]
 TableRowsOnly == \A i \in Items : Changed(i) => RowStep(i) \/ SideEffect(i)
 TableOnly == [][TableRowsOnly]_vars
-\* The steps of the structural findings (no row lists them): their own runs report them with
-\* TableOnly; the other runs of those scenarios check every other step.
-G5Step == step'.verb = FollowUpVerb
-G8Step == step'.verb = "mesh" /\ step'.caller = "mesh" /\ StateOf(step'.item_id) = "verifying"
-TableOnlyExceptStructural == [][~(G5Step \/ G8Step) => TableRowsOnly]_vars
 
 \* Invariant 1, part 2: an unlisted combination is refused, recorded and leaves the record unchanged ...
 RefusalRecorded ==
@@ -754,12 +782,10 @@ RefusalOf(i, v, c) ==
 UnlistedRefused ==
   \A i \in Items, v \in AllVerbs, c \in Callers :
     ~Listed(v, c, StateOf(i)) => ENABLED (RefusalOf(i, v, c) /\ Next)
-\* Model-added (not section 10): a guard refusal is recorded and leaves the record unchanged, except
-\* the refused unblock that O3-9 precheck_refused counts (G3: GuardRefusalWritesNothing).
-CountedRefusal == O39 = "precheck_refused" /\ step'.verb = "unblock"
+\* Model-added (not section 10): a guard refusal of a listed combination is recorded and leaves the
+\* record unchanged; the refused unblock precheck included (D68).
 GuardRefusedUnchanged ==
-  [][(step'.refused /\ step'.why # NotInTable)
-       => RefusalRecorded /\ (CountedRefusal \/ RecordUnchanged)]_vars
+  [][(step'.refused /\ step'.why # NotInTable) => RefusalRecorded /\ RecordUnchanged]_vars
 
 \* Invariant 2, table walk: every non-terminal state has a row to another state that is neither cancel nor override.
 TableExits ==
@@ -831,7 +857,7 @@ TableClosure(S) ==
   IN IF T = S THEN S ELSE TableClosure(T)
 TableReach == TableClosure({"draft"}) = Created
 
-\* Invariant 4: `limit` is never set by a caller (only the mesh counters set it).
+\* Invariant 4: `limit` is never set by a caller, override included (only the mesh counters set it).
 LimitOnlyByMesh ==
   [][\A i \in Items :
        (\/ (PS(item'[i]) = Blocked("limit") /\ StateOf(i) # Blocked("limit"))
@@ -865,6 +891,11 @@ CloseGates ==
 StartNeedsDepends ==
   [][\A i \in Items : (item[i].state = "ready" /\ item'[i].state = "running")
                         => \A d \in item[i].depends : item[d].state \in {"verified", "closed"}]_vars
+\* ... cancelled dependencies are refused at ready, reassign and unblock (D81) ...
+DependsNotCancelledAtReady ==
+  [][\A i \in Items : (step'.item_id = i /\ step'.verb \in {"ready", "reassign", "unblock"} /\ ~step'.refused
+                         /\ PS(item'[i]) = "ready")
+                        => ~\E d \in item'[i].depends : item'[d].state = "cancelled"]_vars
 \* ... and unknown ids, self-dependencies and cycles never get past `ready`.
 DependsWellFormed ==
   \A i \in Items : item[i].state \notin {None, "draft"} =>
@@ -877,36 +908,57 @@ ParentOwnVerification ==
   \A i \in Items : (item[i].children # {} /\ item[i].state = "closed") => ghost[i].own_verify
 
 \* Invariant 10: a user reply unlocks blocked(limit) at most once (LimitReplySingleUse) and only
-\* if it postdates the limit event (LimitReplyFresh): the consumed reply's tick (a terminal
-\* reply's is its hook event time, D64) against the entry's tick (ghost), not the recorded limit_at.
+\* if its mesh seq is greater than limit_seq (LimitReplyFresh): the consumed reply's seq against the
+\* entry's seq kept by the ghost, not against the recorded limit_seq.
 LimitResume(i) == StateOf(i) = Blocked("limit") /\ PS(item'[i]) = "ready"
 LimitReplySingleUse ==
   [][\A i \in Items : LimitResume(i) =>
-       /\ \E r \in item[i].replies : r.ts = step'.reply
+       /\ \E r \in item[i].replies : r.seq = step'.reply
        /\ step'.reply \notin ghost[i].unlocks
        /\ ghost'[i].unlocks = ghost[i].unlocks \cup {step'.reply}]_vars
 LimitReplyFresh ==
   [][\A i \in Items : LimitResume(i) =>
-       \E r \in item[i].replies : r.ts = step'.reply /\ r.ts > ghost[i].limit_entry]_vars
+       \E r \in item[i].replies : r.seq = step'.reply /\ r.seq > ghost[i].limit_entry]_vars
 
-\* Invariant 11: a stale result (record version or attempt mismatch) is never written.
-\* `dirty` is a ghost set by every write after the pane's read, independent of `version`.
+\* Invariant 11: a stale result (section 8: an attempt-relevant field or the attempt id changed since the
+\* read) is never written.  `dirty` is a ghost set by every write after the pane's read that changed an
+\* attempt-relevant field, even if a later write changed it back.
 StaleNeverWritten ==
   [][/\ (step'.kind = "verb" /\ step'.verb = "verify" /\ step'.pane \in Panes /\ ~step'.refused)
           => (~pane[step'.pane].dirty /\ pane[step'.pane].read_attempt = item[step'.item_id].attempt.id)
      /\ (step'.verb \in {"submit", "fail"} /\ step'.pane \in Panes /\ ~step'.refused)
           => pane[step'.pane].owns = item[step'.item_id].attempt.id]_vars
 
-\* Note N1 (D57): a reply-side write (attach, reply, ack) during an unlocked verify bumps the
-\* version, so the run is discarded as stale: correct by inv 11, but a busy thread can starve
-\* verification.  Expected VIOLATED (Cas exercises attach; reply and ack are the same write).
+\* Section 8 (D76, was note N1): a reply-side write (attach, reply, ack) during an unlocked verify does
+\* not make the compare-and-set discard the run.
 ReplyNeverDiscardsVerify ==
-  [][(step'.verb = "verify" /\ step'.refused /\ step'.pane \in Panes)
+  [][(step'.verb = "verify" /\ step'.refused /\ step'.why = StaleWhy /\ step'.pane \in Panes)
        => ~(/\ pane[step'.pane].dirty_by # {}
             /\ pane[step'.pane].dirty_by \subseteq {"attach", "reply", "ack"})]_vars
 
 \* Invariant 12 (no command run changes the shared working tree) is outside the model:
 \* a run-time check of the implementation (README, invariant 12).
+
+\* Invariant 13 (D66): no active child remains linked to a split parent that is in rework or cancelled.
+NoOrphanChildren ==
+  \A i \in Items : item[i].state \in {"rework", "cancelled"} =>
+    \A c \in item[i].children : item[c].state \in Terminal
+
+\* Invariant 14 (D71, D81): a ready item never depends on a cancelled item ...
+NoWaitOnCancelled ==
+  \A i \in Items : item[i].state = "ready" => \A d \in item[i].depends : item[d].state # "cancelled"
+\* ... and the cancel row's part of it: a write that cancels an item moves its ready dependents to
+\* blocked(awaiting_user) in the same write.
+DependentsBlockedOnCancel ==
+  [][\A i \in Items : (StateOf(i) = "ready" /\ i \notin NewlyCancelled
+                         /\ item[i].depends \cap NewlyCancelled # {})
+                        => PS(item'[i]) = Blocked("awaiting_user")]_vars
+
+\* Invariant 15 (D69): a passing verification leaves no revalidate flag from before it: a flag on a
+\* verified item was set after its current verification.
+FlagClearedByReverify ==
+  \A i \in Items : (item[i].state = "verified" /\ item[i].revalidate)
+                     => ghost[i].flag_evidence = item[i].evidence
 
 \* Row coverage: NoRow_<row> says that row outcome (verb, caller, from, to) never fires; each is
 \* expected VIOLATED in a scenario with the row in scope (row-* runs); one that holds is a dead row.
@@ -932,9 +984,17 @@ NoRow_reassign         == [][~Fires("reassign", "pm", {"rework"}, {"ready"})]_va
 NoRow_split            == [][~Fires("split", "pm", {"rework"}, {Blocked("children")})]_vars
 NoRow_mesh_verifying   == [][~Fires("mesh", "mesh", {Blocked("children")}, {"verifying"})]_vars
 NoRow_mesh_rework      == [][~Fires("mesh", "mesh", {Blocked("children")}, {"rework"})]_vars
+NoRow_mesh_verified    == [][~Fires("mesh", "mesh", {"verifying"}, {"verified"})]_vars
+NoRow_mesh_verify_fail == [][~Fires("mesh", "mesh", {"verifying"}, {"rework"})]_vars
+\* (mesh) dependency cancelled runs inside the cancelling write, on the dependents of the step's item
+NoRow_mesh_dependency  == [][~\E j \in Items : /\ step'.kind = "verb" /\ ~step'.refused
+                                               /\ StateOf(j) = "ready" /\ PS(item'[j]) = Blocked("awaiting_user")
+                                               /\ item[j].depends \cap NewlyCancelled # {}]_vars
+NoRow_mesh_follow_up   == [][~Fires("mesh", "mesh", {"closed"}, {"closed"})]_vars
 NoRow_unblock          == [][~Fires("unblock", "pm", {Blocked("environment")}, {"ready"})]_vars
 NoRow_unblock_limit    == [][~Fires("unblock", "pm", {Blocked("environment")}, {Blocked("limit")})]_vars
 NoRow_reject           == [][~Fires("reject", "pm", {"verified"}, {"rework"})]_vars
+NoRow_reject_awaiting  == [][~Fires("reject", "pm", {"verified"}, {Blocked("awaiting_user")})]_vars
 NoRow_ack              == [][~Fires("ack", "pm", NonTerminal, NonTerminal)]_vars
 NoRow_close            == [][~Fires("close", "pm", {"verified"}, {"closed"})]_vars
 NoRow_cancel           == [][~Fires("cancel", "pm", NonTerminal, {"cancelled"})]_vars
@@ -942,56 +1002,29 @@ NoRow_revalidate       == [][~Fires("revalidate", "pm", {"verified", "closed"}, 
 NoRow_override         == [][~Fires("override", "operator", Created, Created)]_vars
 
 -----------------------------------------------------------------------------
-(* Gap probes (README, findings): each states the behaviour the gap says is  *)
-(* missing.  G5, G8: TableOnly; inv 10 / G7: LimitReplyFresh; F1: inv 4.     *)
+(* Decision probes (README, resolved findings): each states a behaviour a   *)
+(* WO-0016 finding showed missing; under D65-D76 each holds.                 *)
 
-\* G1: every failure record sends the item where section 5 routes its class.
+\* D65 (was G1): every failure record sends the item where section 5 routes its class.
 RouteByClass ==
   [][\A i \in Items :
        (item'[i].failure # item[i].failure
           /\ item'[i].failure.class \in {"defect", "conflict", "ambiguity", "environment"})
        => PS(item'[i]) = PS(RouteOf(item'[i].failure.class))]_vars
 
-\* G2a: every rework has a class with a section-5 way back (reassign, ready or split).
+\* D75 (was G2a): every rework has a class with a section-5 way back (reassign, ready or split).
 RouteDefined ==
   \A i \in Items : item[i].state = "rework" => item[i].failure.class \in {"defect", "conflict", "ambiguity"}
 
-\* G2a confirmation: a rework without a class leaves only by cancel (or override).  Expected to HOLD.
-ClasslessReworkStuck ==
-  [][\A i \in Items : (item[i].state = "rework" /\ item[i].failure.class = "none")
-                        => (PS(item'[i]) \in {"rework", "cancelled"} \/ step'.verb = "override")]_vars
-
-\* G2b: when a split parent is back in rework, no child of it is still active.
-NoOrphanChildren ==
-  \A i \in Items : item[i].state = "rework" => \A c \in item[i].children : item[c].state \in Terminal
-
-\* G3: no guard refusal writes the record, not even the refused unblock of O3-9 precheck_refused.
-GuardRefusalWritesNothing ==
-  [][(step'.refused /\ step'.why # NotInTable) => RecordUnchanged]_vars
-
-\* F2: a cancelled split parent leaves no active child (the cancel row gives them no disposition).
-CancelledParentNoActiveChild ==
-  \A i \in Items : item[i].state = "cancelled" => \A c \in item[i].children : StateOf(c) \in Terminal
-
-\* G4: a revalidate flag on a verified item belongs to the current verification (a re-verification would clear it).
-FlagClearedByReverify ==
-  \A i \in Items : (item[i].state = "verified" /\ item[i].revalidate)
-                     => ghost[i].flag_evidence = item[i].evidence
-
-\* G6: a ready item never waits on a cancelled dependency (which can never be satisfied).
-NoWaitOnCancelled ==
-  \A i \in Items : item[i].state = "ready" => \A d \in item[i].depends : item[d].state # "cancelled"
-
-\* O3-8 probe: after a cancelled child, the parent is never split again.
+\* Re-split witnesses (D67): after a cancelled child the parent is never split again ...
 NoResplitAfterCancelledChild ==
   \A i \in Items : ~(ghost[i].cancelled_child /\ StateOf(i) = Blocked("children"))
-
-\* O3-8 probe: after a cancelled child, the parent never closes through its children (merged verification).
+\* ... and never closes through its children (merged verification).  Both are expected VIOLATED.
 NoMergedCloseAfterCancelledChild ==
   \A i \in Items : ~(ghost[i].cancelled_child /\ item[i].state = "closed" /\ item[i].evidence.run = "merged")
 
-\* O3-8: a split leaves no already-cancelled child linked; else "every child closed" never holds and "a cancelled
-\* child -> rework" fires at once: the re-split never completes (stay_linked keeps the first split's cancelled child).
+\* D67 (was O3-8): a split leaves no already-cancelled child linked; else "every linked child closed" never
+\* holds and the (mesh) child cancelled row fires at once: the re-split would never complete.
 ResplitCanComplete ==
   [][\A i \in Items : (StateOf(i) = "rework" /\ PS(item'[i]) = Blocked("children"))
                         => \A c \in item'[i].children : item'[c].state # "cancelled"]_vars

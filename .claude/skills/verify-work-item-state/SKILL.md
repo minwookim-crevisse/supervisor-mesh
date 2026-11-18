@@ -19,11 +19,11 @@ The design file decides by its hash, not by git: `scripts/formal-check.sh` compa
 sha256 of `docs/designs/work-item-state-model.md` with `DESIGN_SHA256` (the sync point,
 section 5) and stops with `STALE` and exit code 4 when they differ. That also catches an
 edit to the uncommitted design file, which `git log` cannot show. A STALE run means:
-read the changed sections 1-10 and 12, update the model (section 4 below), then move
+read the changed sections 1-10, update the model (section 4 below), then move
 the sync point.
 
 Not hashed, so check by reading:
-- A decision in `docs/designs/pm-led-onboarding.md` (D40-D64) that changes E2.
+- A decision in `docs/designs/pm-led-onboarding.md` (D40-D81) that changes E2.
 - Once it exists: the transition table, guards, counters, reply handling or the state
   write in `mesh/state.py` (compare its table row by row with `Table`).
 - Once these files are committed, `git log --oneline <sync commit>..HEAD --
@@ -64,11 +64,9 @@ distinct, seconds, verdict):
 | verdict | meaning |
 |---|---|
 | `PASS (...)` | every property listed in that scenario cfg holds within the bounds |
-| `REACHED inv 3 / inv 2 / row / O3-8 ...` | the probe was violated as required: the state is reachable / the exit is taken / the table row fires / the alternative behaviour happens |
+| `REACHED inv 3 / inv 2 / row / D67 ...` | the probe was violated as required: the state is reachable / the exit is taken / the table row fires / the re-split happens or completes |
 | `FINDING <id> (... known)` | a known design finding reproduced; its counterexample is printed below the line |
-| `READING G2a (...)` | a known finding that holds only under one reading of an ambiguous row; the other reading's run passes |
-| `STRUCTURAL G5 / G8 (... known)` | a known finding read off the table itself (no row for the step); TLC only replays it |
-| `NOTE N1 (... known)` | a known consequence that breaks no section-10 invariant, printed the same way |
+| `READING`, `STRUCTURAL`, `NOTE` | kinds for a finding under one reading of an ambiguous row, a finding read off the table itself, and a consequence that breaks no section-10 invariant; none at present (the WO-0016 ones were decided as D65-D76) |
 | `UNEXPECTED: got X, expected Y` | another result: the trace is printed and the logs are kept |
 | `UNEXPECTED: ... by another counterexample: last step 'A', expected 'B'` | the expected property is violated, but by a different path than the known one |
 
@@ -120,9 +118,10 @@ new path as above; the known finding is not shown to be gone.
 
 **Masked known findings**: one break often makes several runs UNEXPECTED. A change that
 lets an earlier step break a property that many scenarios check (for example a `close`
-that ignores the revalidate flag breaks `CloseGates` in core, replies and o39-refused)
-also turns finding runs of those scenarios UNEXPECTED (core-g4 then reports `CloseGates`
-instead of `FlagClearedByReverify`), because TLC stops at the first violated property.
+that ignores the revalidate flag breaks `CloseGates` in core, replies, deps and followup)
+also turns finding and witness runs of those scenarios UNEXPECTED (row-mesh-dependency
+then reports `CloseGates` if that path is shorter than the known one), because TLC stops
+at the first violated property.
 Those findings are masked, not fixed: resolve the first cause, rerun, and they come back.
 
 **The intended change breaks an invariant**: you changed the model to follow an
@@ -147,28 +146,30 @@ property or the bounds to make the change pass.
    `tests/formal/variants.py` (exact-text edits that break the guard the property
    depends on, the scenario, the property) and run
    `scripts/formal-check.sh --variants --only '<name>'`. A variant that survives means
-   the property is too weak or the model too ideal: N2 survived while one strictly
-   increasing clock stamped every time, and fails in RepliesClockTies, where the
-   limit-entry time can tie or lag. Strengthen the property or widen the model; only if
-   neither is possible, record it in the README as structurally implied.
+   the property is too weak or the model too ideal: N2 (the D63 single-use bit) is
+   implied by freshness under the one mesh seq of D74, so its variant also weakens the
+   limit_seq record. Strengthen the property or widen the model; only if neither is
+   possible, record it in the README as structurally implied. A design decision gets a
+   `d<NN>-*` variant that restores the old behaviour and must FAIL (the D65-D76 and D81
+   ones).
 5. Update the README (properties, findings, coverage, bounds) and the sync record below,
    and move `DESIGN_SHA256` in the script; then run without `--allow-stale`.
 
-When the orchestrator decides O3-8 or O3-9, keep the chosen alternative's runs, delete
-the other alternative's scenario cfg and `EXPECT` rows, and fold the result into the
-main scenario. When the design says whether `override` is exempt from invariants 4-10,
-update or drop the `tablewalk-f1` run accordingly. When it settles whether the split
-consumes the failure record (G2a), keep the matching `SplitFailure` value and drop the
-other scenario.
+A decided design finding becomes a property that holds in the scenario cfg plus a
+`d<NN>-*` broken variant with the old behaviour (README, "Resolved findings"); delete the
+finding run, its scenario if only it used it, and any constant that chose between
+alternatives (as WO-0020 did for O3-8, O3-9, G2a and ClockTies).
 
 ## 5. Sync record
 
-- Sync commit: `335540f` (the design file as committed there).
+- Sync commit: none yet. The design file was uncommitted at sync time (HEAD `692c02a`,
+  WO-0020, D65-D76 and D81); the lead moves this line to the commit that carries it once
+  Ship commits it.
 - Design file `docs/designs/work-item-state-model.md` sha256
-  `f7235b6acb7cd57287efd48d785cbe4770143dca43a7af1711e56dfad8827c1b`; the same value
+  `56b25c9fbf3c5433afadb08ad472d4e83f33d5dd21c690e1b125d0b0b63fc11c`; the same value
   is `DESIGN_SHA256` in `scripts/formal-check.sh`. The hash decides, not the commit.
-- Covered: design sections 1 and 3-10 (invariant 12 as a run-time check only) and the
-  open items of section 12; not covered: section 2 (the diagram). Per property, bound and
+- Covered: design sections 1 and 3-10 (invariant 12 as a run-time check only); section
+  12 has no open items. Not covered: section 2 (the diagram). Per property, bound and
   finding: `tests/formal/README.md`.
 - Move this record and `DESIGN_SHA256` forward only after you have re-read the changed
   design sections, confirmed (or made) the model describe the new version, and seen
