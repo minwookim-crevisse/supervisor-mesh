@@ -37,6 +37,8 @@
 | WO-0031 | Local checkpoint commit: WO-0028 + WO-0030 + QA WO-0024 skill build + specs/reports, NO push | ship | WO-0030 | pass (a1bb251 local, not pushed; PM-verified) | — |
 | WO-0032 | Local checkpoint commit: WO-0030 tail 1+2 (D118-D123), QA skill run-1 fixes, specs, reports, NO push | ship | WO-0030 tail 2 | pass (382cf02 local, not pushed; PM-verified) | — |
 | WO-0033 | Local checkpoint commit: WO-0030 tail 3 (D124), QA formal 9a re-pin, WO-0024 report, specs, NO push | ship | WO-0030 tail 3 | pass (b27c2c4 local, not pushed; PM-verified) | — |
+| WO-0034 | D125 pane_command render wait (live step f finding) + PM channel-choice rule in agents/pm-orchestrator.md | backend | WO-0025 | pass (PM gate) | — |
+| WO-0035 | Local commit of WO-0034 on top of the 0.2.0 release commit, NO push | ship | WO-0034 | dispatched | — |
 | WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | pass (0501f50 local, not pushed; PM-verified) | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).

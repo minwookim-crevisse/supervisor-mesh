@@ -22,7 +22,7 @@ Protocol (at most once: a keypress is not idempotent):
      used)
   3  re-classify the pane                                    not idle -> ABORTED, nothing typed
   4  `tmux send-keys -l -- <text>`
-  5  capture and require the text in the prompt box          not there -> ABORTED, Enter is NOT pressed (an Enter on a
+  5  poll the capture (D125: up to render_wait_s)            not there -> ABORTED, Enter is NOT pressed (an Enter on a
                                                              dialog would answer it); C-u clears what was typed
   6  Enter
   7  locked write: status DONE; the receipt (target uid, command, event id, seq) into item history and events.jsonl
@@ -33,6 +33,7 @@ A crash after 2 leaves ATTEMPTING; `recover` marks it UNKNOWN and it is never re
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, replace
 from typing import Callable
@@ -55,6 +56,7 @@ from .store import Store
 from .tmux import ScreenKind, Tmux, TmuxFailed, classify, holds, prompt_text, valid_pane_id
 
 MAX_LEN = 512
+POLL_S = 0.1  # D125: the capture step while the typed text renders into the input box
 TOOL = "pane_command"
 CODES = frozenset(
     {
@@ -110,11 +112,13 @@ class Target:
 class PaneCommand:
     def __init__(
         self, store: Store, pmx: Projmux, tmux: Tmux, root, own_pane: str | None, at: str,
-        confirm: Callable[[], None] | None = None, prove: layers.Prover | None = None,
+        confirm: Callable[[], None] | None = None, prove: layers.Prover | None = None, render_wait_s: float = 3,
+        now: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
     ):  # fmt: skip
         self.store, self.pmx, self.tmux, self.root, self.own_pane, self.at = store, pmx, tmux, root, own_pane, at
         self.confirm = confirm  # D113: raises the refusal unless the operator typed the popup code
         self.prove = prove  # D123: the cite-time transcript proof of a candidate event
+        self.render_wait_s, self.now, self.sleep = render_wait_s, now, sleep  # D125
 
     # -- refusals
     def _refuse(self, caller: Caller, code: RefusalCode, detail: str, item_id: str | None = None):
@@ -236,7 +240,7 @@ class PaneCommand:
             return "aborted_not_idle"
         try:  # from the first key on, part of the text may be in the lead's input box: every abort clears it
             self.tmux.type_literal(target.tmux_id, command)  # 4
-            if not holds(self.tmux.capture(target.tmux_id), command):  # 5
+            if not self._rendered(target, command):  # 5
                 self._clear(target)
                 return "aborted_text_not_on_prompt"
             self.tmux.enter(target.tmux_id)  # 6
@@ -244,6 +248,17 @@ class PaneCommand:
             self._clear(target)
             return "aborted_tmux_failed"
         return "done"
+
+    def _rendered(self, target: Target, command: str) -> bool:
+        """D125: the box may show the typed text only after the slash menu renders. Poll the capture every POLL_S up
+        to render_wait_s until it holds exactly the text; other text in the box is never entered (it times out)."""
+        return layers.poll_until(
+            lambda: holds(self.tmux.capture(target.tmux_id), command),
+            self.render_wait_s,
+            POLL_S,
+            sleep=self.sleep,
+            clock=self.now,
+        )
 
     def _clear(self, target: Target) -> None:
         """An abort after typing: C-u erases the input line, so the lead's box is not left holding our text (never

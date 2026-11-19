@@ -766,6 +766,7 @@ def pane_command(ctx: Context, args: PaneCommandArgs) -> dict:
         ctx.clock(),
         confirm=lambda: _confirm(ctx, caller, "pane_command"),
         prove=layers.transcript_prover(root, ctx.env, pmx.claude_session),
+        render_wait_s=_config(ctx).pane_render_wait_s,
     )
     if args.propose:
         return pc.propose(caller, args.role, args.command)

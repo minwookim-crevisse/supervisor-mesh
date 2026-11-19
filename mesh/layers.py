@@ -317,6 +317,24 @@ def retry(
     return outcomes
 
 
+def poll_until(
+    check: Callable[[], bool],
+    timeout_s: float,
+    step_s: float,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """True as soon as `check()` holds, checked at once and then every `step_s`; False once `timeout_s` has passed
+    without it (D125). `check` may raise: the caller handles it."""
+    deadline = clock() + timeout_s
+    while not check():
+        if clock() >= deadline:
+            return False
+        sleep(step_s)
+    return True
+
+
 # ---------------------------------------------------------------- output checks (D92)
 MAX_EVIDENCE = 200  # characters of a matched line kept as evidence
 _ABS_PATH = re.compile(r"(?<![\w.~-])/(?:[^\s/\"':]+/)*[^\s/\"':]+")

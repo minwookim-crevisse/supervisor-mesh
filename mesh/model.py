@@ -842,6 +842,7 @@ class Config:
     dispatch_backoff_s: float = 1.0  # D93: the first wait, doubled per attempt
     stall_minutes: int = 15  # D102: no lead activity on a running / verifying item for this long is a stall
     confirm_timeout_s: int = 120  # D113: how long the operator has to type the popup's code
+    pane_render_wait_s: float = 3  # D125: how long pane_command waits for the typed text to reach the input box
 
     def verify_hash(self) -> str:
         """sha256 over the canonical JSON of the evidence-relevant inputs (D47). Limits do not change it; an empty

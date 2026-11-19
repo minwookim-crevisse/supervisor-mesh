@@ -877,6 +877,7 @@ class D116TmuxTargetTests(PaneCase):
 
     def test_c5_a_trust_prompt_after_typing_gets_no_enter_and_no_clear_line_key(self):
         # adopted from guardtests/test_guard_pane.py::test_c5_trust_prompt_after_typing_enter_is_never_sent (+ D116)
+        (self.root / ".mesh" / "config.toml").write_text("[pane_command]\nrender_wait_s = 0.2\n")  # D125: short poll
         for screen in (TRUST_SCREEN, PERMISSION_SCREEN):
             with self.subTest(screen=screen[:20]):
                 self.screen(
@@ -888,6 +889,7 @@ class D116TmuxTargetTests(PaneCase):
                 self.assertEqual(self.clears(), [])  # C-u into a dialog could act on it
 
     def test_c5_the_clear_line_key_is_sent_when_the_prompt_line_is_visible(self):
+        (self.root / ".mesh" / "config.toml").write_text("[pane_command]\nrender_wait_s = 0.2\n")  # D125: short poll
         self.screen(swallow=True)  # the text never reaches the box: the prompt stays visible and empty-looking
         self.screen(next_screens=[ready_screen(), ready_screen(), ready_screen("noise"), ready_screen("noise")])
         out = self.pc("/compact", self.event("run /compact"))

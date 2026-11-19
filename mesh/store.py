@@ -160,6 +160,9 @@ def parse_config(text: str) -> Config:
     _positive_int(stall, "status.stall_minutes")
     confirm_timeout = raw.get("confirm", {}).get("timeout_s", defaults.confirm_timeout_s)
     _positive_int(confirm_timeout, "confirm.timeout_s")
+    render_wait = raw.get("pane_command", {}).get("render_wait_s", defaults.pane_render_wait_s)
+    if isinstance(render_wait, bool) or not isinstance(render_wait, (int, float)) or not 0 < render_wait <= 30:
+        raise InvalidArgs("config.toml: pane_command.render_wait_s must be a number above 0 and at most 30")
     return Config(
         limits.get("retry", defaults.retry_limit),
         limits.get("environment_unblock", defaults.environment_limit),
@@ -173,6 +176,7 @@ def parse_config(text: str) -> Config:
         float(backoff),
         stall,
         confirm_timeout,
+        render_wait,
     )
 
 

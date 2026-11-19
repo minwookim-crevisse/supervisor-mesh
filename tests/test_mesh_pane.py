@@ -254,6 +254,7 @@ class PaneCommandProtocolTests(PaneCase):
         self.assertTrue(result.data["receipt"]["lead_notified"])
 
     def test_text_that_does_not_reach_the_prompt_is_never_submitted(self):
+        (self.root / ".mesh" / "config.toml").write_text("[pane_command]\nrender_wait_s = 0.2\n")  # D125: short poll
         self.screen(swallow=True)
         ev = self.event("run /compact")
         result = self.pc("/compact", ev)
@@ -300,6 +301,125 @@ class PaneCommandProtocolTests(PaneCase):
         self.refused(self.pc("/compact"), "event_not_bound")
         self.refused(self.pc("/compact", "ev-424242"), "event_unknown")
         self.assertEqual(self.keys(), [])
+
+
+class FakeClock:
+    """D125: a monotonic clock that only `sleep` advances (no real waiting)."""
+
+    def __init__(self):
+        self.t, self.sleeps = 0.0, []
+
+    def now(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+
+class RenderWaitTests(PaneCase):
+    """D125: after typing, poll the capture (100 ms steps, up to render_wait_s) until the box holds the text."""
+
+    def direct(self, command, wait=3.0):
+        ctx, clock = self.ctx(), FakeClock()
+        pc = pane.PaneCommand(
+            ctx.store, ctx.pmx, ctx.tmux, ctx.root, None, ctx.clock(), render_wait_s=wait, now=clock.now,
+            sleep=clock.sleep,
+        )  # fmt: skip
+        ev = self.event(f"run {command}")
+        try:
+            return pc.send(ctx.caller(), "backend", command, ev, None), clock
+        except pane.PaneAborted as exc:
+            return exc, clock
+
+    def typed(self):
+        return [a for a in self.keys() if "-l" in a]
+
+    def enters(self):
+        return [a for a in self.keys() if a[-1] == "Enter"]
+
+    def clears(self):
+        return [a for a in self.keys() if a[-1] == "C-u"]
+
+    def test_the_box_fills_after_several_captures_then_enter_is_pressed_once(self):
+        self.screen(render_after=4)
+        result, clock = self.direct("/compact")
+        self.assertIsInstance(result, dict, result)
+        self.assertEqual(self.receipts()[0]["outcome"], "done")
+        self.assertEqual((len(self.typed()), len(self.enters()), self.clears()), (1, 1, []))
+        self.assertEqual(self.submitted(), ["/compact"])
+        self.assertEqual(clock.sleeps, [0.1] * 4)  # five captures after typing: four waits of 100 ms
+
+    def test_a_box_that_never_fills_is_cleared_and_aborted_within_render_wait_s(self):
+        self.screen(swallow=True)
+        result, clock = self.direct("/compact", wait=2.0)
+        self.assertIsInstance(result, pane.PaneAborted)
+        self.assertEqual(self.receipts()[0]["outcome"], "aborted_text_not_on_prompt")
+        self.assertEqual((len(self.typed()), self.enters(), len(self.clears())), (1, [], 1))
+        self.assertTrue(set(clock.sleeps) <= {0.1}, clock.sleeps)
+        self.assertGreaterEqual(clock.t, 2.0 - 1e-9)
+        self.assertLessEqual(clock.t, 2.0 + 0.1 + 1e-9)  # bounded by render_wait_s (one step of slack)
+
+    def test_a_box_that_fills_with_other_text_is_never_entered(self):
+        other = ready_screen().replace("{box}", "something else entirely")
+        self.screen(swallow=True, next_screens=[ready_screen(), ready_screen(), other])
+        result, clock = self.direct("/compact", wait=1.0)
+        self.assertIsInstance(result, pane.PaneAborted)
+        self.assertEqual(self.receipts()[0]["outcome"], "aborted_text_not_on_prompt")
+        self.assertEqual((len(self.typed()), self.enters(), len(self.clears())), (1, [], 1))
+        self.assertLessEqual(clock.t, 1.0 + 0.1 + 1e-9)
+
+    def test_a_tmux_failure_while_polling_clears_and_aborts(self):
+        self.screen(render_after=2)
+        ctx, clock = self.ctx(), FakeClock()
+        calls = {"n": 0}
+        original = tmux.Tmux.capture
+
+        def flaky(self_, pane_id, lines=60):
+            calls["n"] += 1
+            if calls["n"] == 4:  # guard, re-check, first poll ok; the second poll fails
+                raise tmux.TmuxFailed("tmux capture-pane failed (exit 1)")
+            return original(self_, pane_id, lines)
+
+        tmux.Tmux.capture = flaky
+        try:
+            pc = pane.PaneCommand(
+                ctx.store, ctx.pmx, ctx.tmux, ctx.root, None, ctx.clock(), render_wait_s=3, now=clock.now,
+                sleep=clock.sleep,
+            )  # fmt: skip
+            with self.assertRaises(pane.PaneAborted):
+                pc.send(ctx.caller(), "backend", "/compact", self.event("run /compact"), None)
+        finally:
+            tmux.Tmux.capture = original
+        self.assertEqual(self.receipts()[0]["outcome"], "aborted_tmux_failed")
+        self.assertEqual((len(self.typed()), self.enters()), (1, []))
+
+    def test_the_tool_reads_render_wait_s_from_the_config(self):
+        (self.root / ".mesh" / "config.toml").write_text("[pane_command]\nrender_wait_s = 1\n")
+        self.screen(swallow=True)
+        result = self.pc("/compact", self.event("run /compact"))
+        self.assertEqual(result.data["error"]["code"], "pane_aborted")
+        polls = [a for a in self.fakes.calls("tmux") if a[2] == "capture-pane"]
+        self.assertGreater(len(polls), 4)  # guard, re-check, more than one poll, the clear's capture
+        self.assertLessEqual(len(polls), 2 + 11 + 1)  # at most 1 s / 0.1 s + 1 polls
+
+
+class RenderWaitConfigTests(unittest.TestCase):
+    def test_render_wait_s_is_parsed_with_a_default_of_three(self):
+        from mesh import defaults, store
+
+        self.assertEqual(store.parse_config("").pane_render_wait_s, 3)
+        self.assertEqual(store.parse_config("[pane_command]\nrender_wait_s = 1.5\n").pane_render_wait_s, 1.5)
+        self.assertEqual(store.parse_config("[pane_command]\nrender_wait_s = 30\n").pane_render_wait_s, 30)
+        self.assertEqual(store.parse_config(defaults.config_toml("ts")).pane_render_wait_s, 3)
+        self.assertIn("# [pane_command]\n# render_wait_s = 3", defaults.config_toml(None))
+
+    def test_invalid_render_wait_s_values_are_refused(self):
+        from mesh import store
+
+        for value in ("0", "-1", "true", "false", '"3"', "31", "1e9", "nan", "inf"):
+            with self.assertRaises(InvalidArgs, msg=value):
+                store.parse_config(f"[pane_command]\nrender_wait_s = {value}\n")
 
 
 if __name__ == "__main__":

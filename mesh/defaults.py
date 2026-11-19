@@ -24,6 +24,9 @@ operator_channel = "terminal"
 
 # [status]
 # stall_minutes = 15  # mesh_status: no lead activity on a running/verifying item for this long is a stall (D102)
+
+# [pane_command]
+# render_wait_s = 3  # how long a typed slash command may take to reach the lead's input box before Enter (D125)
 """
 
 _VERIFY = """
