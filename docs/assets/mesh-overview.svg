@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="716" viewBox="0 0 1060 716" role="img" aria-labelledby="ttl">
+<title id="ttl">How the pieces fit: the operator gives the PM one goal; the PM sends a work order to each of four role agents; inside each agent the lead briefs a worker subagent and verifies its output; only the verified result and evidence go back to the PM</title>
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f2328}
+.t{font-size:15px;font-weight:600}
+.s{font-size:13px;fill:#57606a}
+.l{font-size:13px;fill:#424a53;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}
+.lt{stroke:#f6f8fa}.ls{stroke:#fff8f2}
+.v{font-size:13px;font-weight:600;fill:#1a7f37}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.g{font-size:13px;font-weight:600;fill:#6e7781;letter-spacing:1px}
+.tag{font-size:13px;fill:#1a7f37}
+.o{stroke:#424a53;stroke-width:1.6;fill:none}
+.r{stroke:#6e7781;stroke-width:1.6;fill:none;stroke-dasharray:5 4}
+</style>
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#424a53"/></marker>
+<marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#6e7781"/></marker>
+<symbol id="ip" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></g></symbol>
+<symbol id="it" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/></g></symbol>
+<symbol id="ig" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.2"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></g></symbol>
+<symbol id="iq" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="3" width="15" height="18" rx="2.5"/><path d="M8 9l2 2 4-4M8 16h8"/></g></symbol>
+<symbol id="is" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v5.5c0 4.6-3.3 8.4-8 9.5-4.7-1.1-8-4.9-8-9.5V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></g></symbol>
+<symbol id="ib" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="7" r="2.2"/><path d="M6 7.2v9.6M18 9.2c0 4.5-6 4-11 7.6"/></g></symbol>
+<symbol id="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#1a7f37"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<!-- inside of one role agent, drawn at container origin (s, 340); container is 225 x 316 -->
+<g id="inner">
+<path class="o" d="M50 94V187" marker-end="url(#a)"/>
+<path class="r" d="M175 190V97" marker-end="url(#b)"/>
+</g>
+<g id="wk">
+<rect x="24" y="190" width="177" height="72" rx="12" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="6 4"/>
+<use href="#it" x="38" y="206" width="24" height="24" color="#1a7f37"/>
+<rect x="72" y="228" width="72" height="22" rx="11" fill="#ffffff" stroke="#1a7f37"/>
+<text class="tag" x="108" y="243" text-anchor="middle">subagent</text>
+</g>
+</defs>
+<rect x="1" y="1" width="1058" height="714" rx="16" fill="#ffffff" stroke="#d0d7de" stroke-width="2"/>
+
+<!-- operator -->
+<rect x="420" y="24" width="220" height="56" rx="12" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+<use href="#ip" x="436" y="36" width="32" height="32" color="#424a53"/>
+<text class="t" x="476" y="57">You, the operator</text>
+<path class="o" d="M500 80V157" marker-end="url(#a)"/>
+<path class="r" d="M560 160V83" marker-end="url(#b)"/>
+<text class="l" x="492" y="124" text-anchor="end">one goal</text>
+<text class="l" x="568" y="124">status and decisions</text>
+
+<!-- PM -->
+<rect x="50" y="160" width="960" height="80" rx="14" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+<use href="#it" x="70" y="180" width="40" height="40" color="#0969da"/>
+<text class="t" x="126" y="194">PM session</text>
+<text class="s" x="126" y="218">Tier 0, label role=pm · plans, dispatches, runs the gate</text>
+<text class="g" x="990" y="206" text-anchor="end">TIER 0</text>
+
+<!-- PM <-> role agents (containers start at x 50, 295, 540, 785; top y 340) -->
+<path class="o" d="M142 240V337" marker-end="url(#a)"/>
+<path class="r" d="M202 340V243" marker-end="url(#b)"/>
+<path class="o" d="M387 240V337" marker-end="url(#a)"/>
+<path class="r" d="M447 340V243" marker-end="url(#b)"/>
+<path class="o" d="M632 240V337" marker-end="url(#a)"/>
+<path class="r" d="M692 340V243" marker-end="url(#b)"/>
+<path class="o" d="M877 240V337" marker-end="url(#a)"/>
+<path class="r" d="M937 340V243" marker-end="url(#b)"/>
+<text class="l" x="134" y="270" text-anchor="end">work order</text><text class="l" x="134" y="286" text-anchor="end">(<tspan class="m">work_dispatch</tspan>)</text>
+<text class="l" x="379" y="270" text-anchor="end">work order</text><text class="l" x="379" y="286" text-anchor="end">(<tspan class="m">work_dispatch</tspan>)</text>
+<text class="l" x="624" y="270" text-anchor="end">work order</text><text class="l" x="624" y="286" text-anchor="end">(<tspan class="m">work_dispatch</tspan>)</text>
+<text class="l" x="869" y="270" text-anchor="end">release order</text><text class="l" x="869" y="286" text-anchor="end">(<tspan class="m">work_dispatch</tspan>)</text>
+<text class="l" x="210" y="308">verified result</text><text class="l" x="210" y="324">+ evidence</text>
+<text class="l" x="455" y="308">verified result</text><text class="l" x="455" y="324">+ evidence</text>
+<text class="l" x="700" y="308">verified result</text><text class="l" x="700" y="324">+ evidence</text>
+<text class="l" x="945" y="308">verified result</text><text class="l" x="945" y="324">+ evidence</text>
+
+<!-- containers -->
+<rect x="50" y="340" width="225" height="316" rx="14" fill="#f6f8fa" stroke="#afb8c1" stroke-width="1.5"/>
+<rect x="295" y="340" width="225" height="316" rx="14" fill="#f6f8fa" stroke="#afb8c1" stroke-width="1.5"/>
+<rect x="540" y="340" width="225" height="316" rx="14" fill="#f6f8fa" stroke="#afb8c1" stroke-width="1.5"/>
+<rect x="785" y="340" width="225" height="316" rx="14" fill="#fff8f2" stroke="#e7a96f" stroke-width="1.5"/>
+<text class="t" x="66" y="364">backend agent</text>
+<text class="t" x="311" y="364">qa agent</text>
+<text class="t" x="556" y="364">security agent</text>
+<text class="t" x="801" y="364">ship agent</text>
+
+<!-- leads -->
+<rect x="66" y="378" width="193" height="56" rx="12" fill="#fbefff" stroke="#8250df" stroke-width="1.5"/>
+<use href="#ig" x="78" y="393" width="26" height="26" color="#8250df"/>
+<text class="t" x="114" y="411">backend lead</text>
+<rect x="311" y="378" width="193" height="56" rx="12" fill="#fbefff" stroke="#8250df" stroke-width="1.5"/>
+<use href="#iq" x="323" y="393" width="26" height="26" color="#8250df"/>
+<text class="t" x="359" y="411">qa lead</text>
+<rect x="556" y="378" width="193" height="56" rx="12" fill="#fbefff" stroke="#8250df" stroke-width="1.5"/>
+<use href="#is" x="568" y="393" width="26" height="26" color="#8250df"/>
+<text class="t" x="604" y="411">security lead</text>
+<rect x="801" y="378" width="193" height="56" rx="12" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.5"/>
+<use href="#ib" x="813" y="393" width="26" height="26" color="#bc4c00"/>
+<text class="t" x="849" y="411">ship lead</text>
+
+<!-- lead <-> worker inside each container -->
+<use href="#inner" x="50" y="340"/>
+<use href="#inner" x="295" y="340"/>
+<use href="#inner" x="540" y="340"/>
+<use href="#inner" x="785" y="340"/>
+<text class="l lt" x="108" y="460">brief</text>
+<text class="l lt" x="353" y="460">brief</text>
+<text class="l lt" x="598" y="460">brief</text>
+<text class="l ls" x="843" y="460">brief</text>
+<text class="l lt" x="217" y="484" text-anchor="end">output</text>
+<text class="l lt" x="462" y="484" text-anchor="end">output</text>
+<text class="l lt" x="707" y="484" text-anchor="end">output</text>
+<text class="l ls" x="952" y="484" text-anchor="end">output</text>
+<use href="#ic" x="114" y="495" width="16" height="16"/><text class="v" x="134" y="508">lead verifies</text>
+<use href="#ic" x="359" y="495" width="16" height="16"/><text class="v" x="379" y="508">lead verifies</text>
+<use href="#ic" x="604" y="495" width="16" height="16"/><text class="v" x="624" y="508">lead verifies</text>
+<use href="#ic" x="849" y="495" width="16" height="16"/><text class="v" x="869" y="508">lead verifies</text>
+
+<!-- workers (dashed = subagent) -->
+<use href="#wk" x="50" y="340"/><text class="t" x="122" y="560">backend worker</text>
+<use href="#wk" x="295" y="340"/><text class="t" x="367" y="560">qa worker</text>
+<use href="#wk" x="540" y="340"/><text class="t" x="612" y="560">security worker</text>
+<use href="#wk" x="785" y="340"/><text class="t" x="857" y="560">ship worker</text>
+
+<text class="s" x="801" y="626">the only role that</text>
+<text class="s" x="801" y="644">commits and pushes</text>
+
+<!-- legend -->
+<path class="o" d="M50 688H92" marker-end="url(#a)"/>
+<text class="s" x="102" y="693">order</text>
+<path class="r" d="M160 688H202" marker-end="url(#b)"/>
+<text class="s" x="212" y="693">result</text>
+</svg>

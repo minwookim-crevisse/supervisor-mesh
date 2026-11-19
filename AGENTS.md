@@ -32,7 +32,7 @@ Reports written before 2026-10-19 may still cite the old docs/qa/ path; the live
 `scripts/gc/*.py` are produced by `/supervisor-mesh:init` from `templates/gc/` (dogfood) and must stay byte-identical — edit the template, then re-copy.
 
 ## Role model (supervisor mesh)
-Tier-0 Orchestrator (one) → Tier-1 role leads → Tier-2 workers. A lead supervises a same-role worker and verifies output; it does not implement. Only the Ship role pushes, and only after the maintainer confirms. Full method: `docs/core/methodology.md`.
+Tier-0 Orchestrator (one) → Tier-1 role leads → Tier-2 workers. A lead supervises a same-role worker, which is the lead's in-process subagent: the lead briefs it, receives its output directly, verifies it and sends rework to it (a separate pane or projmux agent only when the PM's order explicitly asks for one); it does not implement. Only the Ship role pushes, and only after the maintainer confirms. Full method: `docs/core/methodology.md`.
 
 ## Roles in this project
 - orchestrator: plans changes to the plugin, owns `docs/decisions/` and this file.

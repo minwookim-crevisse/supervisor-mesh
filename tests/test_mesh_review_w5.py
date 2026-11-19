@@ -710,18 +710,34 @@ from mesh import dispatch, status  # noqa: E402
 
 
 class D102CompletionSignalTextTests(unittest.TestCase):
-    def test_the_dispatch_header_tells_the_lead_to_spawn_workers_with_a_completion_step_and_to_wait(self):
+    def test_the_dispatch_header_makes_workers_in_process_subagents_with_d102_as_the_exception(self):
+        # D126 / DEC-0016: each worker is the lead's in-process subagent; the D102 completion signal is kept only for
+        # an order that explicitly asks for a separate worker agent.
         for text in (dispatch.HEADER, skill_header()):
+            self.assertIn("in-process subagent", text)
+            self.assertIn("lead + in-process subagent worker + lead-review", text)
+            self.assertIn("Only if this order explicitly asks for a separate worker agent", text)
             self.assertIn("-done", text)
             self.assertIn("projmux agent wait", text)
             self.assertIn("--until idle --timeout", text)
             self.assertIn("projmux agent message send", text)
+            self.assertNotIn("spawn each worker with the label", text)
+            for unsafe in ("`", "$"):  # dispatch payload hygiene: the header crosses a shell in the fallback path
+                self.assertNotIn(unsafe, text)
         self.assertEqual(dispatch.HEADER, skill_header())
 
     def test_the_run_skill_says_the_same(self):
         text = (ROOT / "skills" / "run" / "SKILL.md").read_text(encoding="utf-8")
-        for part in ("<WO>-done", "projmux agent wait", "--until idle --timeout", "worker-of=", "stalls"):
+        for part in (
+            "in-process subagent",
+            "<WO>-done",
+            "projmux agent wait",
+            "--until idle --timeout",
+            "worker-of=",
+            "stalls",
+        ):
             self.assertIn(part, text)
+        self.assertNotIn("spawn it with the label", text)
 
 
 NOW = "2026-11-18T01:00:00Z"

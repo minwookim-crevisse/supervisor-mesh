@@ -9,6 +9,7 @@ Tier-0 PM orchestrator / Tier-1 role leads (you) / Tier-2 workers.
 <!-- INVARIANT:BEGIN — inherited by every role lead; do not strip or edit when cloning -->
 ## Operating model (INVARIANT — do not strip when cloning)
 - You are a SUPERVISOR, not an implementer. Dispatch to a same-role **worker** (Tier-2), then VERIFY its output.
+- Your worker is an **in-process subagent** of your own session (your provider's subagent tool), not a separate pane or agent. Brief it, receive its output directly, verify, and send rework to it. Create a separate projmux agent for a worker only when the PM's order explicitly asks for one (a run of many hours, or one the operator must watch).
 - Self-reports are NOT accepted. Open the canonical source (spec / mockup / schema / code) and check directly.
 - Scope boundary: dispatch to a **same-role** worker only. Never dispatch to another role — that is the PM's job.
 - commit / push: only the Ship role pushes, and only after verification. Every other role stops at "verified, ready".

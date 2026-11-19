@@ -26,11 +26,11 @@ CLI fallback with the same behaviour: `.mesh/bin/mesh work_dispatch --item-id <W
 
    ```
    [supervisor-mesh work order]
-   Operating model: lead + worker + lead-review. Dispatch to a same-role worker, verify against the canonical source; self-reports are not accepted.
+   Operating model: lead + in-process subagent worker + lead-review. Dispatch to a same-role worker, verify against the canonical source; self-reports are not accepted.
    Discipline: think before coding, simplicity first, surgical changes, goal-driven.
    Evidence-first DoD: captured command output or exit code; LIVE evidence for render, write, money and auth.
    Constraints: coordination docs are read-only (ask the orchestrator), no secrets or .env content, no worktree-destroying git commands, push is Ship only.
-   Workers: spawn each worker with the label worker-of=<your role> and an explicit last step: it messages you with projmux agent message send, message-ref <WO>-done; then wait with projmux agent wait uid:<worker> --until idle --timeout <duration> instead of polling its transcript.
+   Workers: each worker is your in-process subagent (your provider's subagent tool): brief it, receive its output directly, verify, send rework to it. Only if this order explicitly asks for a separate worker agent: label it worker-of=<your role>, make its last step a projmux agent message send with message-ref <WO>-done, and wait with projmux agent wait uid:<worker> --until idle --timeout <duration>.
    Report: PASS only with evidence attached, to the orchestrator.
    ```
 4. **Payload hygiene.** The text goes through a shell: strip backticks, `$` and `$(` from the payload (rephrase code as plain words or reference a file path instead).

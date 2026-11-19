@@ -29,7 +29,7 @@
 | WO-0022 | mesh package + stdio MCP server (MVP 0.2.0), `docs/work-orders/2026-11-18-mcp-mvp.md` | backend | — (∥ WO-0020) | pass (PM gate 2026-11-18: make check 0, 531 tests; validate 0; stdio probe 11 tools; G-4 -> WO-0028) | `docs/reports/WO-0022-backend.md` |
 | WO-0023 | Security review of the MCP tool surface, same work order | security | WO-0022 | pass (final verdict at b27c2c4: F1-F13 fixed, 116 tests OK; accepted risks D86 D88 D96 D99 D121) | `docs/reports/WO-0023-security.md` |
 | WO-0024 | Live MCP verification in a new project, same work order | qa | WO-0022 (∥ WO-0023) | pass (runs 1+2 live on a1bb251 / 382cf02; step (f) PASS on e9ed309 after D125 fix; 9a formal re-pin: 68 runs 0 FINDING) | `docs/reports/WO-0024-qa.md` |
-| WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | dispatched (release commit; push after operator OK + step (f)) | — |
+| WO-0025 | Release 0.2.0: commit batches W then M, push after operator OK | ship | WO-0020, WO-0022..0024, PM gate | pass (0.2.0 pushed 2026-11-19: 65af1b8..64ad970, fast-forward, operator-approved) | — |
 | WO-0026 | Commit batch W (WO-0020, WO-0021, D65-D81 design, batch M spec + work orders) and push main (operator OK 2026-10-30) | ship | WO-0020, WO-0021 | pass (65af1b8 pushed by ship; origin/main = 65af1b8, PM-verified) | — |
 | WO-0027 | Re-sync TLA+ model to D100 (config hash at ready) + D101 (PM self-review reject), `docs/work-orders/2026-10-29-state-model-resync.md` method | qa | — (∥ WO-0022) | pass (PM gate 2026-11-18: make formal 68 runs 0 FINDING 0 UNEXPECTED; variants 49/49; D100-D106; unit gate excludes 3 W5-touched modules, full make check re-run after W5) | `docs/reports/WO-0027-qa.md` |
 | WO-0028 | D107: narrow the D96 deny rule to .mesh/state.json, events.jsonl, refusals.jsonl (config.toml stays editable; D100 pins it) | backend | WO-0029 | pass (PM-checked DENY_RULES 2026-11-18; 533 tests) | `docs/reports/WO-0022-backend.md` (addendum) |
@@ -39,7 +39,11 @@
 | WO-0033 | Local checkpoint commit: WO-0030 tail 3 (D124), QA formal 9a re-pin, WO-0024 report, specs, NO push | ship | WO-0030 tail 3 | pass (b27c2c4 local, not pushed; PM-verified) | — |
 | WO-0034 | D125 pane_command render wait (live step f finding) + PM channel-choice rule in agents/pm-orchestrator.md | backend | WO-0025 | pass (PM gate) | — |
 | WO-0035 | Local commit of WO-0034 on top of the 0.2.0 release commit, NO push | ship | WO-0034 | pass (e9ed309 local; PM-verified) | — |
-| WO-0036 | Local commit of the final WO-0024 report + tracker, NO push | ship | WO-0024 | dispatched | — |
+| WO-0036 | Local commit of the final WO-0024 report + tracker, NO push | ship | WO-0024 | pass (64ad970) | — |
+| WO-0037 | README diagrams as hand-authored SVG, candidates rendered for operator choice (docs/work-orders/2026-11-19-readme-diagrams.md) | designer | — | pass (operator final: Mesh D, Lifecycle B, Approval A; README swapped to SVG) | — |
+| WO-0038 | DEC-0016 worker = lead's in-process subagent: role-lead invariant block, methodology, AGENTS.md, templates/AGENTS.md, pm-orchestrator (PM doc edits; QA to verify) | qa | — | pass (final; R1 R3 test gaps -> 0.3.0 follow-ups; R2 R4 fixed by PM) | — |
+| WO-0039 | D126 dispatch header: workers are in-process subagents (WO-0038 F1, root cause of pane workers) | backend | WO-0038 | pass (PM gate: make check 0, 674 tests) | — |
+| WO-0040 | Release 0.2.1: README rewrite + SVG diagrams, DEC-0016 worker-as-subagent (docs, agents, dispatch header D126); commit + push after operator OK | ship | WO-0037, WO-0038, WO-0039 | dispatched | — |
 | WO-0029 | Local checkpoint commit of batch M so far (WO-0022, WO-0027, specs, DEC-0015), NO push | ship | WO-0022, WO-0027 | pass (0501f50 local, not pushed; PM-verified) | — |
 
 Parallel batch 1 = WO-0001 / WO-0002 / WO-0003 (read-only reviews, disjoint report files).
@@ -51,5 +55,6 @@ Design findings G1-G8, F1, F2, O3-8, O3-9, inv 10, N1 decided 2026-10-29 (D65-D7
 Batch M (MCP MVP 0.2.0, spec `docs/designs/mcp-server-spec.md`, D77-D80): WO-0020 ∥ WO-0022 → WO-0023 ∥ WO-0024 → PM gate (make check + make formal + live evidence) → WO-0025.
 Pilot (operator 2026-11-18): project `mesh-pilot` = Tiny Ledger (TS split-expense library + CLI). First 1-2 items run on 0.1.2 as the baseline (manual tracker); the rest on 0.2.0 (MCP). Compare rework count, PASS reversals and operator interventions; result feeds WO-0024.
 New-project adoption (operator 2026-11-18): wait for 0.2.0 (MCP) and adopt from it; no new project on 0.1.2. Pilot phase 2 also starts on 0.2.0.
+0.3.0 follow-ups from WO-0038: R1 run-skill test must assert the explicit-order condition; R3 test for the >4096-byte InvalidArgs refusal.
 Follow-ups (not dispatched): smv.py package split, FakeSlack helper, shared role lookup, formal runner/probes module, 5 skill doc notes (qa); live runs of the other five features and `marketplace remove` (qa).
 Design for WO-0009..0015: `docs/designs/pm-led-onboarding.md` (APPROVED 2026-10-14).

@@ -17,7 +17,7 @@ A method for running software work as a **multi-session agent mesh** with built-
   Tier-1  ROLE LEADS (per role)    — supervise one same-role worker, verify output, report up.
      │      fe · qa · designer · backend · security · ship · ...  Do NOT implement.
      ▼
-  Tier-2  WORKERS (spawned)        — do the actual work (code, tests, docs). Produce; never self-certify.
+  Tier-2  WORKERS (subagents)      — in-process subagents of their lead; do the actual work (code, tests, docs). Produce; never self-certify.
 ```
 Each tier is a **supervisor of the tier below**. A tier never does the tier below's job. The human sits above Tier-0.
 
@@ -25,6 +25,7 @@ Each tier is a **supervisor of the tier below**. A tier never does the tier belo
 **Lead + Worker + Lead-review.** The lead dispatches to a worker, then VERIFIES the output against the DoD.
 - **Self-reports are not accepted.** The lead opens the canonical source (spec / mockup / schema / code) and checks directly. "Done / matches" prose is not acceptance.
 - **Scope boundary.** A lead dispatches to a **same-role** worker only. Cross-role dispatch is the Orchestrator's job alone.
+- **A worker is the lead's in-process subagent.** The lead briefs it with its own subagent tool, gets the output back directly, verifies it, and sends rework to the same subagent. This is the default because it starts at once, adds no pane, needs no message round trip, and leaves nothing to clean up. A separate agent (its own pane) is the exception: only when the PM's order asks for it, for work that runs for hours or that the operator must watch. The PM and the leads are separate sessions; workers are not.
 - **One pusher.** Only the Ship role commits/pushes. Every other role stops at "verified, ready".
 
 ## 3. The dispatch contract (standard header on every work order)

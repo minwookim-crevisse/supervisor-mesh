@@ -3,6 +3,13 @@
 > Single owner: the Orchestrator writes this. Others propose via their report file.
 > This log OUTRANKS every other doc on conflict. Newest decision wins.
 
+## DEC-0016 — A worker is its lead's in-process subagent (core principle)
+- Date: 2026-11-19
+- Status: accepted (operator: a core principle of supervisor-mesh)
+- Context: the methodology said only "a lead supervises a same-role worker" and never said what a worker is. Leads read projmux's generic guidance ("create agents with projmux, not provider subagents") and diverged: backend and QA used subagents, security and the first designer run made separate panes. Separate panes cost a trust prompt, registration, message round trips (with live size and broker-capacity failures), window slots and manual cleanup, and put the lead's verification one message hop away from the output.
+- Decision: a worker is an in-process subagent of its lead's session. The lead briefs it, receives the output directly, verifies it and sends rework to it. A separate projmux agent for a worker is an exception the PM must request in the order (work of many hours, or work the operator must watch). The PM and the role leads stay separate sessions; workers do not. Stated in the role-lead invariant block (template and every shipped lead), `docs/core/methodology.md`, `AGENTS.md`, `templates/AGENTS.md`, `agents/pm-orchestrator.md`, the dispatch header that `work_dispatch` prepends (`mesh/dispatch.py`, spec D126) and the `dispatch` and `run` skills.
+- Consequences: projmux's generic "use projmux agents" guidance applies to the PM and to cross-role agents, not to workers. Existing separate worker panes are retired after review.
+
 ## DEC-0015 — Companion install on operator approval (supersedes DEC-0003 in part)
 - Date: 2026-11-18
 - Status: accepted

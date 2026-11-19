@@ -8,7 +8,7 @@
 3. This file + the role model below
 
 ## Role model (supervisor mesh)
-Tier-0 Orchestrator (one) → Tier-1 role leads → Tier-2 workers. A lead supervises a same-role worker and verifies output; it does not implement. Only <SHIP ROLE> pushes. Full method: (plugin) supervisor-mesh core methodology.
+Tier-0 Orchestrator (one) → Tier-1 role leads → Tier-2 workers. A lead supervises a same-role worker, which is the lead's in-process subagent: the lead briefs it, receives its output directly, verifies it and sends rework to it (a separate pane or projmux agent only when the PM's order explicitly asks for one); it does not implement. Only <SHIP ROLE> pushes. Full method: (plugin) supervisor-mesh core methodology.
 
 ## Roles in this project  <!-- Part B: fill -->
 - <role>: <what it owns · canonical docs · data boundary>

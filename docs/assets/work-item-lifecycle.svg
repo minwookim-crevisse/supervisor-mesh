@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="460" viewBox="0 0 980 460" role="img" aria-labelledby="ttl">
+<title id="ttl">Work-item lifecycle as a loop: draft, ready, running, verifying, then verified and closed; a failed command or a PM reject sends the item to rework, and PM ready sends it back to ready</title>
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f2328}
+.st{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:15px;font-weight:600}
+.s{font-size:13px;fill:#57606a}
+.l{font-size:13px;font-weight:600;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}
+.pm{fill:#0969da}.ld{fill:#8250df}.ms{fill:#1a7f37}
+.o{stroke:#424a53;stroke-width:1.6;fill:none}
+.x{stroke:#cf222e;stroke-width:1.6;fill:none}
+</style>
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#424a53"/></marker>
+<marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#cf222e"/></marker>
+<symbol id="it" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/></g></symbol>
+<symbol id="ig" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.2"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></g></symbol>
+</defs>
+<rect x="1" y="1" width="978" height="458" rx="16" fill="#ffffff" stroke="#d0d7de" stroke-width="2"/>
+
+
+<!-- start / end -->
+<circle cx="40" cy="118" r="9" fill="#1f2328"/>
+<circle cx="890" cy="420" r="12" fill="none" stroke="#1f2328" stroke-width="2"/>
+<circle cx="890" cy="420" r="6.5" fill="#1f2328"/>
+
+<!-- states -->
+<rect x="90" y="90" width="120" height="56" rx="12" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+<text class="st" x="150" y="123" text-anchor="middle">draft</text>
+<rect x="270" y="90" width="120" height="56" rx="12" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+<text class="st" x="330" y="123" text-anchor="middle">ready</text>
+<rect x="450" y="90" width="120" height="56" rx="12" fill="#fbefff" stroke="#8250df" stroke-width="1.5"/>
+<text class="st" x="510" y="123" text-anchor="middle">running</text>
+<rect x="630" y="90" width="120" height="56" rx="12" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text class="st" x="690" y="123" text-anchor="middle">verifying</text>
+<rect x="630" y="300" width="120" height="56" rx="12" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text class="st" x="690" y="333" text-anchor="middle">verified</text>
+<rect x="830" y="300" width="120" height="56" rx="12" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+<text class="st" x="890" y="333" text-anchor="middle">closed</text>
+<rect x="270" y="300" width="120" height="56" rx="12" fill="#ffebe9" stroke="#cf222e" stroke-width="1.5"/>
+<text class="st" x="330" y="333" text-anchor="middle">rework</text>
+
+<!-- forward path -->
+<path class="o" d="M49 118H87" marker-end="url(#a)"/>
+<path class="o" d="M210 118H267" marker-end="url(#a)"/>
+<path class="o" d="M390 118H447" marker-end="url(#a)"/>
+<path class="o" d="M570 118H627" marker-end="url(#a)"/>
+<path class="o" d="M720 146V297" marker-end="url(#a)"/>
+<path class="o" d="M750 328H827" marker-end="url(#a)"/>
+<path class="o" d="M890 356V405" marker-end="url(#a)"/>
+<text class="l pm" x="64" y="74" text-anchor="middle">PM work_new</text>
+<text class="l pm" x="240" y="74" text-anchor="middle">PM ready</text>
+<text class="l ld" x="420" y="74" text-anchor="middle">lead start</text>
+<text class="l ld" x="600" y="74" text-anchor="middle">lead submit</text>
+<path d="M64 80V102M240 80V102M420 80V102M600 80V102" stroke="#d0d7de" stroke-width="1.2"/>
+<text class="l ms" x="732" y="214">mesh runs the</text>
+<text class="l ms" x="732" y="230">verify commands</text>
+<text class="l pm" x="790" y="316" text-anchor="middle">PM close</text>
+
+<!-- back paths -->
+<path class="x" d="M650 146V230H360V297" marker-end="url(#c)"/>
+<path class="x" d="M630 336H393" marker-end="url(#c)"/>
+<path class="o" d="M300 300V149" marker-end="url(#a)"/>
+<text class="l ms" x="505" y="222" text-anchor="middle">a command fails</text>
+<text class="l pm" x="510" y="356" text-anchor="middle">PM reject</text>
+<text class="l pm" x="290" y="250" text-anchor="end">PM ready</text>
+
+<!-- legend -->
+<text class="s" x="40" y="430">Who takes the step:</text>
+<use href="#it" x="174" y="415" width="20" height="20" color="#0969da"/>
+<text class="l pm" x="200" y="430">PM</text>
+<use href="#it" x="246" y="415" width="20" height="20" color="#8250df"/>
+<text class="l ld" x="272" y="430">lead</text>
+<use href="#ig" x="324" y="415" width="20" height="20" color="#1a7f37"/>
+<text class="l ms" x="350" y="430">mesh</text>
+</svg>
