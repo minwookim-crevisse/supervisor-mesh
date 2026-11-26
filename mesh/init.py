@@ -24,9 +24,9 @@ import shlex
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
-from . import defaults, layers, tracker
+from . import defaults, git, layers, tracker
 from .model import empty_doc
 from .store import Store
 
@@ -36,6 +36,9 @@ GITIGNORE_LINES = [".env", ".env.*", "!.env.example", ".auth/", "*.sqlite", "*.s
 USAGE = "supervisor-mesh init — lay the primed 4-pillar harness into a project."
 AMBIGUOUS = "STACK AMBIGUOUS — no single package.json / pyproject.toml found. Rerun with --stack ts|python|none."
 NEXT = "# next: fill docs/harness/part-b-checklist.md (Part B — never invent these)"
+AUTHOR_HINT = (  # D134 (A7): read-only; init never sets a git identity
+    '# hint: git user.name is not set for this project; set it before the first commit: git config user.name "<name>"'
+)
 
 COMMON = {
     "docs/decisions/0001-decision-log.md": "docs/decisions/0001-decision-log.md",
@@ -44,6 +47,7 @@ COMMON = {
     "docs/harness/part-b-checklist.md": "part-b-checklist.md",
     "tests/README.md": "tests/README.md",
     "scripts/audit.sh": "tests/audit.sh",
+    "scripts/verify.sh": "verify/verify.sh",  # D131: the one verify command of .mesh/config.toml
     "scripts/gc/check_docs_drift.py": "gc/check_docs_drift.py",
     "scripts/gc/check_structure.py": "gc/check_structure.py",
     "scripts/gc/README.md": "gc/README.md",
@@ -87,6 +91,7 @@ class ScaffoldResult:
     dry_run: bool
     rows: tuple[Row, ...]
     exit_code: int  # 0 ok, 3 stack ambiguous
+    hints: tuple[str, ...] = ()  # printed after NEXT; not part of the rows (nor of mesh_init's plan_id)
 
     def counts(self) -> dict[str, int]:
         return {k: sum(1 for r in self.rows if r.action == k) for k in ("CREATE", "MERGE", "SKIP")}
@@ -221,8 +226,20 @@ def _summary(counts: dict[str, int]) -> str:
     return f"# summary: created={counts['CREATE']} merged={counts['MERGE']} skipped={counts['SKIP']}"
 
 
-def scaffold(target: Path, stack: str, dry_run: bool, echo: Callable[[str], None] | None = None) -> ScaffoldResult:
-    """The scaffold steps as a value. `echo` (main only) prints each line the moment it is known."""
+def author_hints(target: Path, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """D134: the hint when git answers that `user.name` is unset for the target (a git that cannot run: no hint)."""
+    return (AUTHOR_HINT,) if git.user_name(target, dict(os.environ if env is None else env)) == "" else ()
+
+
+def scaffold(
+    target: Path,
+    stack: str,
+    dry_run: bool,
+    echo: Callable[[str], None] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> ScaffoldResult:
+    """The scaffold steps as a value. `echo` (main only) prints each line the moment it is known. `env` is the
+    environment git reads its config with (default: this process's)."""
     target = Path(target).resolve()
     chosen = detect_stack(target) if stack == "auto" else stack
     if chosen is None:
@@ -241,10 +258,12 @@ def scaffold(target: Path, stack: str, dry_run: bool, echo: Callable[[str], None
         merge_package_scripts(target, log)
     if chosen == "python":
         merge_pyproject(target, log)
-    result = ScaffoldResult(target, chosen, dry_run, tuple(log.rows), 0)
+    result = ScaffoldResult(target, chosen, dry_run, tuple(log.rows), 0, author_hints(target, env))
     if echo:
         echo(_summary(result.counts()))
         echo(NEXT)
+        for hint in result.hints:
+            echo(hint)
     return result
 
 
@@ -252,7 +271,7 @@ def render_text(result: ScaffoldResult) -> str:
     if result.stack is None:
         return AMBIGUOUS + "\n"
     lines = [_header(result.target, result.stack, result.dry_run), *(r.line() for r in result.rows)]
-    lines += [_summary(result.counts()), NEXT]
+    lines += [_summary(result.counts()), NEXT, *result.hints]
     return "\n".join(lines) + "\n"
 
 
@@ -313,6 +332,7 @@ class MeshInitResult:
     rows: tuple[Row, ...]
     legacy: dict  # {"status": ..., "rows": n, "mapping": [...], "skipped": [...]}
     plan_id: str
+    hints: tuple[str, ...] = ()  # the scaffold's (D134), outside the plan_id
 
     def summary(self) -> dict[str, int]:
         return {k.lower(): sum(1 for r in self.rows if r.action == k) for k in ("CREATE", "MERGE", "SKIP")}
@@ -495,8 +515,10 @@ def _plan_id(stack: str | None, rows: tuple[Row, ...], legacy: dict) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
-def _bootstrap(root: Path, plugin_root: Path, stack: str, dry_run: bool) -> MeshInitResult:
-    sc = scaffold(root, stack, dry_run)
+def _bootstrap(
+    root: Path, plugin_root: Path, stack: str, dry_run: bool, env: Mapping[str, str] | None = None
+) -> MeshInitResult:
+    sc = scaffold(root, stack, dry_run, env=env)
     if sc.stack is None:
         return MeshInitResult(not dry_run, None, 3, (), {"status": "none", "rows": 0, "mapping": [], "skipped": []}, "")
     log = Log(dry_run)
@@ -508,13 +530,20 @@ def _bootstrap(root: Path, plugin_root: Path, stack: str, dry_run: bool) -> Mesh
     write_launcher(root, plugin_root, log)
     merge_hook(root, log)
     rows = sc.rows + tuple(log.rows)
-    return MeshInitResult(not dry_run, sc.stack, 0, rows, legacy, _plan_id(sc.stack, rows, legacy))
+    return MeshInitResult(not dry_run, sc.stack, 0, rows, legacy, _plan_id(sc.stack, rows, legacy), sc.hints)
 
 
-def mesh_init(root: Path, plugin_root: Path, stack: str, apply: bool, plan_id: str | None) -> MeshInitResult:
+def mesh_init(
+    root: Path,
+    plugin_root: Path,
+    stack: str,
+    apply: bool,
+    plan_id: str | None,
+    env: Mapping[str, str] | None = None,
+) -> MeshInitResult:
     """The dry run, or the apply of exactly the plan the dry run returned (PlanChanged otherwise)."""
     root = Path(root).resolve()
-    preview = _bootstrap(root, plugin_root, stack, dry_run=True)
+    preview = _bootstrap(root, plugin_root, stack, dry_run=True, env=env)
     if not apply or preview.exit_code:
         return preview
     if plan_id != preview.plan_id:
@@ -522,4 +551,4 @@ def mesh_init(root: Path, plugin_root: Path, stack: str, apply: bool, plan_id: s
     outside = [r.path for r in preview.rows if r.action == "REFUSE"]
     if outside:
         raise OutsideRoot(f"refused: {', '.join(outside)} resolve outside the project root (D111); nothing was written")
-    return _bootstrap(root, plugin_root, stack, dry_run=False)
+    return _bootstrap(root, plugin_root, stack, dry_run=False, env=env)

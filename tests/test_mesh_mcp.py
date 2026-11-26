@@ -21,7 +21,7 @@ from test_mesh_state import contract, doc_of, item_in
 
 sys.path.insert(0, str(ROOT))
 from mesh import mcp_server, state, tools  # noqa: E402
-from mesh.model import Caller, NewArgs, OverrideArgs, Phase, json_schema  # noqa: E402
+from mesh.model import DEFAULT_TYPES, Caller, NewArgs, OverrideArgs, Phase, json_schema  # noqa: E402
 from mesh.store import Store  # noqa: E402
 
 SERVER = ROOT / "mesh" / "mcp_server.py"
@@ -148,7 +148,9 @@ class HandshakeTests(McpCase):
         listed = s.rpc("tools/list")["result"]["tools"]
         self.assertEqual(sorted(t["name"] for t in listed), sorted(SPEC_TOOLS))
         by_name = {t["name"]: t for t in listed}
-        self.assertEqual(by_name["work_new"]["inputSchema"], json_schema(NewArgs))
+        new_schema = json_schema(NewArgs)
+        new_schema["properties"]["type"]["enum"] = sorted(DEFAULT_TYPES)  # D132: the project's types
+        self.assertEqual(by_name["work_new"]["inputSchema"], new_schema)
         verbs = by_name["work_transition"]["inputSchema"]["properties"]["verb"]["enum"]
         self.assertEqual(verbs, list(state.surface_verbs("work_transition")))
         self.assertEqual(len(verbs), 15)

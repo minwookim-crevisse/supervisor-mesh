@@ -38,6 +38,15 @@ def head(root: str | os.PathLike, env: Mapping[str, str]) -> str | None:
     return out if res.ok and re.fullmatch(SHA_PATTERN, out) else None
 
 
+def user_name(root: str | os.PathLike, env: Mapping[str, str]) -> str | None:
+    """`git config user.name` as git resolves it for `root` (read-only; D134): the name, "" when unset (exit 1), None
+    when git could not answer (spawn error, timeout, a broken config)."""
+    res = _git(root, env, "config", "--get", "user.name")
+    if res.spawn_error or res.timed_out or res.code not in (0, 1):
+        return None
+    return res.out.strip() if res.ok else ""
+
+
 def commit_exists(root: str | os.PathLike, sha: str, env: Mapping[str, str]) -> bool | None:
     """`git cat-file -t <sha>` is `commit`. None when git itself could not answer (not a repo, spawn error)."""
     sha = valid_sha(sha)

@@ -3,6 +3,20 @@
 > Single owner: the Orchestrator writes this. Others propose via their report file.
 > This log OUTRANKS every other doc on conflict. Newest decision wins.
 
+## DEC-0018 — Finding intake: projects report plugin findings (D103 recorded, D136 designed)
+- Date: 2026-11-25
+- Status: accepted (operator)
+- Context: D103 (2026-11-18) lived only in the spec table. It started finding intake as a project file because the MCP tools did not exist and adding them would have delayed 0.2.0; cadence, triage, reply and a data boundary were never designed, and the 2026-11-20 findings came from a transcript under separate ids.
+- Decision: design `docs/designs/finding-intake.md` (spec D136). The project's `docs/reports/plugin-feedback.md` is the source of truth, written by its PM only; the plugin side pulls; one ledger `docs/reports/fleet-findings.md`; severity / kind / status axes; local path = file + projmux message, remote path = operator-approved GitHub Issue with a project alias; explicit fleet registry; collection is a repo-own script, not a shipped read-only tool; transcripts only on operator request.
+- Consequences: D103's label-based `mesh_fleet_status` tool is dropped; the protocol runs by hand before `mesh_feedback` is built in 0.3.0.
+
+## DEC-0017 — The operator approves a push in the Ship pane
+- Date: 2026-11-19
+- Status: accepted (operator)
+- Context: the operator approved the 0.2.1 push in the PM pane; the PM relayed it; Claude Code's auto-mode classifier in the Ship session refused `git push` because a relayed peer message is not the session user's consent (0.2.0 had passed, so the outcome was not reliable). The operator then pushed by hand.
+- Decision: the operator types the push approval in the Ship lead's pane. Ship reports the commit and the exact push command, waits for that approval in its own pane, then pushes (fast-forward only, no force, no tag). No permission allow rule for `git push` is added, so the human confirmation stays enforced by the harness, not only by documents. If a push is still denied, Ship stops and reports.
+- Consequences: `agents/role-lead-ship.md` and `agents/pm-orchestrator.md` state it; the PM tells the operator which pane and what to type when a release is ready.
+
 ## DEC-0016 — A worker is its lead's in-process subagent (core principle)
 - Date: 2026-11-19
 - Status: accepted (operator: a core principle of supervisor-mesh)

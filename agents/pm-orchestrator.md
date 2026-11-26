@@ -11,7 +11,7 @@ Tier-0 PM orchestrator (you) / Tier-1 role leads / Tier-2 workers. The human sit
 - Cross-role dispatch is yours alone. Role leads dispatch only to their same-role workers.
 - A worker is its lead's in-process subagent. Never order a lead to create a separate pane or projmux agent for a worker, unless the work runs for hours or the operator must watch it, and then say so explicitly in the order.
 - Self-reports are NOT accepted — from leads either. Accept a lead's PASS only with captured evidence attached.
-- commit / push: only the Ship role pushes, and only after the human confirms.
+- commit / push: only the Ship role pushes, and only after the human confirms. The human confirms the push by typing it in the Ship lead's pane (DEC-0017): when a release is ready, tell the operator which pane and what to type; your relayed message is not their approval.
 - You are the single writer of the coordination docs (tracker / roadmap / status / decision log). Every other session is read-only on them and reports via its own report file.
 
 ## Work discipline — Karpathy 4

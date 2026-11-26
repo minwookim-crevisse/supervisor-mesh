@@ -14,3 +14,5 @@
 ## Conventions
 - Skill and agent bodies are English; each tells the agent to answer in the operator's language.
 - Decision ids use four digits (`DEC-0001`).
+- plugin finding (PF): one improvement a project reports about this plugin (not a project defect). Id `PF-NNN` per project. Not the same as the feedback loop pillar, which is the checks that tell an agent whether its work is right.
+- finding intake: the whole path a plugin finding takes, from the project that reports it to the plugin decision or release that answers it.

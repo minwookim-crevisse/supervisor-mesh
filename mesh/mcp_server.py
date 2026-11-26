@@ -49,10 +49,11 @@ def _error(request_id: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-def _tools_list() -> dict:
+def _tools_list(ctx: tools.Context) -> dict:
+    cfg = tools.config_or_defaults(ctx)  # D132: the work_new type enum is the project's types
     listed = []
     for t in tools.REGISTRY.values():
-        entry = {"name": t.name, "description": t.description, "inputSchema": t.input_schema()}
+        entry = {"name": t.name, "description": t.description, "inputSchema": t.input_schema(cfg)}
         if t.read_only:
             entry["annotations"] = {"readOnlyHint": True}
         listed.append(entry)
@@ -97,7 +98,7 @@ def handle(msg: Any, ctx: tools.Context) -> dict | None:
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            result = _tools_list()
+            result = _tools_list(ctx)
         elif method == "tools/call":
             result = _tools_call(ctx, params)
         elif is_notification:

@@ -34,15 +34,16 @@ _VERIFY = """
 # first (same timeout/env rules; a failure is class environment, D91). `fail_if_output`: literal substrings (D115,
 # never regexes) that FAIL a command that exited 0 when a line of its output contains one (D92); at [verify] level
 # they apply to every command.
+# The verify hash is pinned at start: editing these commands later invalidates every ready or running item. Keep the
+# one command below and change checks inside scripts/verify.sh, not in the config (D131).
 [verify]
 {fail}# prepare = ["npm", "ci", "--prefer-offline"]
 # prepare_timeout_s = 600
 
-# [[verify.commands]]
-# argv = ["make", "check"]
-# kind = "test"
-# timeout_s = 600
-# fail_if_output = ["No tests ran"]
+[[verify.commands]]
+argv = ["bash", "scripts/verify.sh"]
+kind = "check"
+timeout_s = 1800
 """
 
 

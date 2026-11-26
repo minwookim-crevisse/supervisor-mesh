@@ -204,12 +204,13 @@ class Tool:
     fn: Callable[[Context, Any], dict]
     access: Literal["any", "pm", "per table"]
     read_only: bool = False
-    schema_hook: Callable[[dict], dict] | None = None
+    schema_hook: Callable[[dict, Config], dict] | None = None
     run: Callable[[Context, Mapping[str, Any] | None], layers.ToolResult] | None = None  # fn wrapped by the layers
 
-    def input_schema(self) -> dict:
+    def input_schema(self, cfg: Config | None = None) -> dict:
+        """`cfg`: the project config `tools/list` read (the defaults without one)."""
         schema = json_schema(self.args)
-        return self.schema_hook(schema) if self.schema_hook else schema
+        return self.schema_hook(schema, cfg or Config()) if self.schema_hook else schema
 
 
 REGISTRY: dict[str, Tool] = {}
@@ -225,7 +226,7 @@ def tool(name: str, description: str, args: type, access: str, *, read_only: boo
     return register
 
 
-def _transition_schema(schema: dict) -> dict:
+def _transition_schema(schema: dict, cfg: Config) -> dict:
     """The verb enum and the per-verb args text come from the table: no second list to keep in step."""
     verbs = list(state.surface_verbs(state.WORK_TRANSITION))
     schema["properties"]["verb"]["enum"] = verbs
@@ -327,7 +328,7 @@ def mesh_init(ctx: Context, args: InitArgs) -> dict:
             raise InvalidArgs("apply needs the plan_id of the dry run the operator saw")
         repin = _pin_check(ctx, caller)
     try:
-        result = init.mesh_init(root, PLUGIN_ROOT, args.stack, args.apply, args.plan_id)
+        result = init.mesh_init(root, PLUGIN_ROOT, args.stack, args.apply, args.plan_id, env=ctx.env)
     except init.PlanChanged as exc:
         raise PlanChanged(str(exc), hint="run mesh_init without apply and show the new plan") from None
     except init.OutsideRoot as exc:
@@ -347,6 +348,7 @@ def mesh_init(ctx: Context, args: InitArgs) -> dict:
         nxt.append(f"show these rows to the operator, then call mesh_init with apply=true and plan_id={result.plan_id}")
     else:
         nxt.append("fill docs/harness/part-b-checklist.md (Part B: ask the operator, never invent values)")
+    nxt.extend(result.hints)  # D134: no git author for this project (read-only; init sets none)
     if install["steps"]:
         nxt.append(
             "missing companions: the operator names `companions_install` (the whole plan) or one plugin name in a "
@@ -450,7 +452,7 @@ def _pm_popup(ctx: Context) -> Callable[[list[str], Mapping[str, str], float], b
 
 def _confirm(ctx: Context, caller: Caller, subject: str, item_id: str | None = None) -> None:
     """D113: refused unless the operator types the one-time popup code."""
-    why = layers.confirm(_pm_popup(ctx), _config(ctx).confirm_timeout_s)
+    why = layers.confirm(_pm_popup(ctx), config_or_defaults(ctx).confirm_timeout_s)
     if why is not None:
         layers.refuse(
             ctx.store,
@@ -517,7 +519,7 @@ def mesh_status(ctx: Context, args: StatusArgs) -> dict:
         "launcher": init.launcher_health(ctx.root, PLUGIN_ROOT) if ctx.root else "missing",
         "last_event": _last_event(ctx) if initialized else None,
         "overlaps": status.overlaps(doc) if doc else [],
-        "stalls": status.stalls(doc, agents, ctx.root, ctx.clock(), _config(ctx))
+        "stalls": status.stalls(doc, agents, ctx.root, ctx.clock(), config_or_defaults(ctx))
         if doc and ctx.root and live is not None
         else [],
     }
@@ -576,7 +578,21 @@ def work_show(ctx: Context, args: ShowArgs) -> dict:
     return {"item": item_json(item)}
 
 
-@tool("work_new", "Create a draft work item (verb new). PM only.", NewArgs, "pm")
+def _new_schema(schema: dict, cfg: Config) -> dict:
+    """D132: `type` is one of the project's types (`Config.types`: the defaults plus `[types]`), read when the client
+    lists the tools; `work_new` itself refuses any other type against the config it reads at call time."""
+    schema["properties"]["type"]["enum"] = sorted(cfg.types)
+    return schema
+
+
+@tool(
+    "work_new",
+    "Create a draft work item (verb new). PM only. `type` must be one of the project's types (the defaults plus "
+    "[types] in .mesh/config.toml); an unknown type is refused (contract_incomplete) with the allowed list.",
+    NewArgs,
+    "pm",
+    schema_hook=_new_schema,
+)
 def work_new(ctx: Context, args: NewArgs) -> dict:
     return _apply(ctx, Verb.NEW, args, None)
 
@@ -665,7 +681,7 @@ def _send_order(ctx: Context, item: Item, action) -> dict:
     if why:
         actions.mark_done(ctx.store, item.id, action.action_id, {"superseded": why})
         return {"action_id": action.action_id, "sent": False, "superseded": True}
-    cfg = _config(ctx)
+    cfg = config_or_defaults(ctx)
     attempts = attempt_log(action)
 
     def attempt(n: int):  # D93: every attempt is recorded on the pending action before the next one
@@ -694,7 +710,7 @@ def attempt_log(action) -> list[str]:
     return raw.split(",") if raw else []
 
 
-def _config(ctx: Context) -> Config:
+def config_or_defaults(ctx: Context) -> Config:
     try:
         return ctx.store.read_config()
     except MeshError:  # a config that no longer parses: the defaults (a dispatch is no verification)
@@ -766,7 +782,7 @@ def pane_command(ctx: Context, args: PaneCommandArgs) -> dict:
         ctx.clock(),
         confirm=lambda: _confirm(ctx, caller, "pane_command"),
         prove=layers.transcript_prover(root, ctx.env, pmx.claude_session),
-        render_wait_s=_config(ctx).pane_render_wait_s,
+        render_wait_s=config_or_defaults(ctx).pane_render_wait_s,
     )
     if args.propose:
         return pc.propose(caller, args.role, args.command)

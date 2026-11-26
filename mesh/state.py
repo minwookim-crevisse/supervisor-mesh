@@ -161,7 +161,7 @@ ENV = Count("environment_unblock", "environment_limit", "environment")
 # should read like section 4 of the design.
 # fmt: off
 TABLE: tuple[Row, ...] = (
-    row("new", Verb.NEW, Pm, {None}, {P.DRAFT}, NewArgs, "new_item", via=WORK_NEW),
+    row("new", Verb.NEW, Pm, {None}, {P.DRAFT}, NewArgs, "new_item", guards=("type_known",), via=WORK_NEW),
     row("draft", Verb.DRAFT, Actor.SLACK_WATCHER, {None}, {P.DRAFT}, NoArgs, None),                 # data only
     row("attach", Verb.ATTACH, Actor.SLACK_WATCHER, NT, {SAME}, NoArgs, None),                      # data only
     row("reply", Verb.REPLY, Pm, NT, {SAME}, ReplyArgs, "attach_terminal_reply",
@@ -737,6 +737,18 @@ def reason_given(c: Ctx) -> Verdict | None:
     return None
 
 
+def _unknown_type(name: str, cfg: Config) -> str:
+    return f"unknown type {name!r}; allowed: {', '.join(sorted(cfg.types))}"
+
+
+@guard(RefusalCode.CONTRACT_INCOMPLETE)
+def type_known(c: Ctx) -> Verdict | None:
+    """D132: `new` refuses a type the config does not declare (a type cannot be patched later)."""
+    if c.req.args.type not in c.cfg.types:
+        return _verdict(RefusalCode.CONTRACT_INCOMPLETE, _unknown_type(c.req.args.type, c.cfg))
+    return None
+
+
 @guard(RefusalCode.CONTRACT_INCOMPLETE)
 def contract_complete(c: Ctx) -> Verdict | None:
     k = _patched(c)
@@ -748,7 +760,7 @@ def contract_complete(c: Ctx) -> Verdict | None:
     if not k.role:
         return _verdict(RefusalCode.CONTRACT_INCOMPLETE, "no role")
     if spec is None:
-        return _verdict(RefusalCode.CONTRACT_INCOMPLETE, f"unknown type {k.type!r}")
+        return _verdict(RefusalCode.CONTRACT_INCOMPLETE, _unknown_type(k.type, c.cfg))
     missing = [key for key in spec.required_inputs if not k.type_inputs.get(key)]
     if missing:
         return _verdict(RefusalCode.CONTRACT_INCOMPLETE, f"type {k.type} needs inputs {missing}")

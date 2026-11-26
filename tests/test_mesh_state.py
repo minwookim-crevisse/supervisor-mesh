@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from mesh import state, tools  # noqa: E402
 from mesh.model import (
     CREATED,
+    DEFAULT_TYPES,
     NO_FACTS,
     NON_TERMINAL,
     Actor,
@@ -311,7 +312,10 @@ class ReadyTests(unittest.TestCase):
 
     def test_an_incomplete_contract_is_refused_and_a_patch_can_complete_it(self):
         for kw in (dict(goal=" "), dict(done_criteria=()), dict(type="no-such-type")):
-            out = self.draft(**kw).do(Verb.READY, PM, ReadyArgs(), "WO-0001")
+            sim = Sim(cfg=Config(types={**DEFAULT_TYPES, "no-such-type": TypeSpec()}))
+            self.draft(sim, **kw)
+            sim.cfg = Config()  # D132: `new` checks the type; `ready` still refuses one the config dropped since
+            out = sim.do(Verb.READY, PM, ReadyArgs(), "WO-0001")
             self.assertEqual(out.refusal.code, RefusalCode.CONTRACT_INCOMPLETE, kw)
         sim = self.draft(goal="")
         sim.ok(Verb.READY, PM, ReadyArgs(ContractPatch(goal="now it has one")), "WO-0001")
