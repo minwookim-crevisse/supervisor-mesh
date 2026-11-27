@@ -6,7 +6,9 @@
        project root, phase Running)
     -> label role=pm: PM; any other valid role label: LEAD; anything else: UNKNOWN.
 No fallback guessing: a missing variable, no or several matching panes, an empty agentUID, an agent that is not a live
-member, an invalid role, or projmux failing all resolve to UNKNOWN. `reason` names the case, never an env value.
+member, an invalid role, or projmux failing all resolve to UNKNOWN. `reason` names the case, never an env value; the
+UNKNOWN caller's `rule` is its fixed code (D141: no_pane_env, no_pane, ambiguous_pane, not_managed, projmux_unavailable,
+not_member, invalid_role), shown by every caller_not_pm refusal.
 """
 
 from __future__ import annotations
@@ -35,26 +37,30 @@ class Resolved:
 def resolve(env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux) -> Resolved:
     pane_uid = env.get(PANE_VAR) or ""
     if not pane_uid:
-        return Resolved(Caller.unknown(), "not inside a managed projmux pane")
+        return Resolved(Caller.unknown(rule="no_pane_env"), "not inside a managed projmux pane")
     try:
         matches = [p for p in pmx.panes() if p.uid == pane_uid]
         if len(matches) != 1:
-            return Resolved(Caller.unknown(), "no pane matches" if not matches else "ambiguous pane identity")
+            if not matches:
+                return Resolved(Caller.unknown(rule="no_pane"), "no pane matches")
+            return Resolved(Caller.unknown(rule="ambiguous_pane"), "ambiguous pane identity")
         agent_uid, claude_pid = matches[0].agent_uid, matches[0].claude_pid
         if not agent_uid:
-            return Resolved(Caller.unknown(), "this pane is not a managed agent")
+            return Resolved(Caller.unknown(rule="not_managed"), "this pane is not a managed agent")
         members = pmx.live_members(root)
         member = next((a for a in members if a.uid == agent_uid), None)
     except ProjmuxUnavailable:
-        return Resolved(Caller.unknown(), "projmux unavailable")
+        return Resolved(Caller.unknown(rule="projmux_unavailable"), "projmux unavailable")
     if member is None:
-        return Resolved(Caller.unknown(), "the pane's agent is not a live, labelled member of this project")
+        return Resolved(
+            Caller.unknown(rule="not_member"), "the pane's agent is not a live, labelled member of this project"
+        )
     pms = sum(1 for a in members if a.role == "pm")
     if member.role == "pm":
         return Resolved(Caller.pm(member.uid), "pm", pane_uid, claude_pid, pms)
     if re.fullmatch(ROLE_PATTERN, member.role or ""):
         return Resolved(Caller.lead(member.role, member.uid), "lead", pane_uid, claude_pid, pms)
-    return Resolved(Caller.unknown(), "the role label is not a valid role")
+    return Resolved(Caller.unknown(rule="invalid_role"), "the role label is not a valid role")
 
 
 class PaneCaller:

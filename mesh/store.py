@@ -163,6 +163,9 @@ def parse_config(text: str) -> Config:
     render_wait = raw.get("pane_command", {}).get("render_wait_s", defaults.pane_render_wait_s)
     if isinstance(render_wait, bool) or not isinstance(render_wait, (int, float)) or not 0 < render_wait <= 30:
         raise InvalidArgs("config.toml: pane_command.render_wait_s must be a number above 0 and at most 30")
+    ttl = raw.get("pane_command", {}).get("proposal_ttl_s", defaults.pane_proposal_ttl_s)
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or not 0 < ttl <= 3600:
+        raise InvalidArgs("config.toml: pane_command.proposal_ttl_s must be a number above 0 and at most 3600")
     return Config(
         limits.get("retry", defaults.retry_limit),
         limits.get("environment_unblock", defaults.environment_limit),
@@ -177,6 +180,7 @@ def parse_config(text: str) -> Config:
         stall,
         confirm_timeout,
         render_wait,
+        ttl,
     )
 
 

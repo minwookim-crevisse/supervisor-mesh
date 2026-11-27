@@ -298,11 +298,12 @@ def _pm_only(ctx: Context, subject: str, caller: Caller) -> None:
         return
     hint = caller.why or init.PM_LABEL_HINT
     detail = f"{subject} is a PM tool" + (f"; {hint}" if caller.kind is CallerKind.UNKNOWN else "")
-    _refuse(ctx, subject, RefusalCode.CALLER_NOT_PM, detail, caller)
+    rule = layers.caller_rule(caller)  # D141: why the caller is not the PM
+    _refuse(ctx, subject, RefusalCode.CALLER_NOT_PM, layers.with_rule(detail, rule), caller, rule)
 
 
-def _refuse(ctx: Context, subject: str, code: RefusalCode, detail: str, caller: Caller):
-    layers.refuse(ctx.store, layers.tool_refusal(subject, code, detail, ctx.clock(), caller))
+def _refuse(ctx: Context, subject: str, code: RefusalCode, detail: str, caller: Caller, rule: str | None = None):
+    layers.refuse(ctx.store, layers.tool_refusal(subject, code, detail, ctx.clock(), caller, rule=rule))
 
 
 def _rows(rows) -> list[dict]:
@@ -385,7 +386,9 @@ def _pin_check(ctx: Context, caller: Caller):
     if doc.pm_uid is None or (doc.pm_uid == caller.agent_uid and rp is None):
         return None
     if rp is None:
-        _refuse(ctx, "mesh_init", RefusalCode.CALLER_NOT_PM, f"mesh_init apply: {layers.OTHER_PM_WHY}", caller)
+        rule = layers.PM_GATE_RULES[layers.OTHER_PM_WHY]  # D141: not the pinned PM
+        detail = layers.with_rule(f"mesh_init apply: {layers.OTHER_PM_WHY}", rule)
+        _refuse(ctx, "mesh_init", RefusalCode.CALLER_NOT_PM, detail, caller, rule)
     event = layers.resolve_event(ctx.store, rp.event_id, event_prover(ctx))  # D123: may prove the candidate
     bound = layers.bind_event(
         ctx.store.read().doc, event, fresh=False, tokens=("re-pin",),
@@ -764,8 +767,10 @@ def tracker_render(ctx: Context, args: RenderArgs) -> dict:
 @tool(
     "pane_command",
     "Type one operator-named slash command into a lead's pane (D84, D85). PM only. Cite the hook-recorded operator "
-    "event that names the command, or propose=true first (it returns an id P-<n>) and cite the operator's very next "
-    "prompt, which must name that id. The "
+    "event that names the command, or propose=true first (it returns an id P-<n>) and cite the operator's prompt "
+    "that names that id (one id, at most 80 characters, within [pane_command] proposal_ttl_s, default 600 s; a use "
+    "expires the other proposals of the same command). Ask the operator to write the command inside a sentence "
+    "(`backend: /ns:name args`): a bare `/skill` typed in the PM pane runs that skill in the PM. The "
     "pane must be idle; trust and permission prompts are never answered; the keypress is never retried.",
     PaneCommandArgs,
     "pm",
@@ -783,6 +788,7 @@ def pane_command(ctx: Context, args: PaneCommandArgs) -> dict:
         confirm=lambda: _confirm(ctx, caller, "pane_command"),
         prove=layers.transcript_prover(root, ctx.env, pmx.claude_session),
         render_wait_s=config_or_defaults(ctx).pane_render_wait_s,
+        proposal_ttl_s=config_or_defaults(ctx).pane_proposal_ttl_s,
     )
     if args.propose:
         return pc.propose(caller, args.role, args.command)

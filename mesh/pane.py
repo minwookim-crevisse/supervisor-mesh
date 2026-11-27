@@ -12,14 +12,16 @@ Guards (all must hold; a refusal is recorded in refusals.jsonl with subject `pan
            agent or pane, never a `role=pm` agent
   event    exists, unused, fresh (the newest operator prompt, by mesh seq: D74), and bound (D85):
              name path      the event text names the command as a whole token (`names`)
-             proposal path  the latest proposal before the event has exactly this text and role, is unused, and the
-                            event is the FIRST operator prompt after it
-  pane     projmux reports no running turn or open question, and the tmux screen is an idle, empty prompt
+             proposal path  D141: the event holds exactly one P-id, at most 80 characters, and the NAMED proposal
+                            has exactly this text and role, is unused, came before the event and within
+                            proposal_ttl_s of it; its use expires the same-command siblings
+  pane     projmux reports no running turn or open question, and the tmux screen is an idle, empty prompt (or one
+           showing only a faint suggestion, D141)
 
 Protocol (at most once: a keypress is not idempotent):
   1  guards on a snapshot (unlocked: projmux, tmux)
   2  locked write: re-check the event against the fresh document; mark it used, status ATTEMPTING (and the proposal
-     used)
+     and its same-command siblings used)
   3  re-classify the pane                                    not idle -> ABORTED, nothing typed
   4  `tmux send-keys -l -- <text>`
   5  poll the capture (D125: up to render_wait_s)            not there -> ABORTED, Enter is NOT pressed (an Enter on a
@@ -53,7 +55,7 @@ from .model import (
 )
 from .projmux import Agent, CwdRule, Projmux, ProjmuxUnavailable
 from .store import Store
-from .tmux import ScreenKind, Tmux, TmuxFailed, classify, holds, prompt_text, valid_pane_id
+from .tmux import ScreenKind, Tmux, TmuxFailed, classify, holds, prompt_text, suggestion_only, valid_pane_id
 
 MAX_LEN = 512
 POLL_S = 0.1  # D125: the capture step while the typed text renders into the input box
@@ -112,31 +114,36 @@ class Target:
 class PaneCommand:
     def __init__(
         self, store: Store, pmx: Projmux, tmux: Tmux, root, own_pane: str | None, at: str,
-        confirm: Callable[[], None] | None = None, prove: layers.Prover | None = None, render_wait_s: float = 3,
+        confirm: Callable[[], None] | None = None, prove: layers.Prover | None = None, render_wait_s: float = 15,
         now: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+        proposal_ttl_s: float = 600,
     ):  # fmt: skip
         self.store, self.pmx, self.tmux, self.root, self.own_pane, self.at = store, pmx, tmux, root, own_pane, at
         self.confirm = confirm  # D113: raises the refusal unless the operator typed the popup code
         self.prove = prove  # D123: the cite-time transcript proof of a candidate event
         self.render_wait_s, self.now, self.sleep = render_wait_s, now, sleep  # D125
+        self.proposal_ttl_s = proposal_ttl_s  # D141
 
     # -- refusals
-    def _refuse(self, caller: Caller, code: RefusalCode, detail: str, item_id: str | None = None):
-        layers.refuse(self.store, layers.tool_refusal(TOOL, code, detail, self.at, caller, item_id))
+    def _refuse(self, caller: Caller, code: RefusalCode, detail: str, item_id: str | None = None, rule=None):
+        layers.refuse(self.store, layers.tool_refusal(TOOL, code, detail, self.at, caller, item_id, rule))
 
     # -- propose (D85 proposal path): store the exact text, type nothing
     def propose(self, caller: Caller, role: str, command: str) -> dict:
         self._caller_and_text(caller, role, command)
-        prop = layers.propose(self.store, role, command, caller.agent_uid)
+        prop = layers.propose(self.store, role, command, caller.agent_uid, self.at)
         return {
             "proposal": {"id": prop.id, "seq": prop.seq, "role": role, "command": command},
-            "next": f"ask the operator to approve this exact command by naming {prop.id} in their very next prompt "
-            "(D97: a prompt without the id approves nothing), then call again with that prompt's event id",
+            "next": f"ask the operator to approve this exact command with a short prompt (at most {layers.PROMPT_MAX} "
+            f"characters) naming {prop.id} and no other id, within {self.proposal_ttl_s:g} s (D97, D141: a prompt "
+            "without the id approves nothing), then call again with that prompt's event id",
         }
 
     def _caller_and_text(self, caller: Caller, role: str, command: str) -> None:
         if caller.kind is not CallerKind.PM:
-            self._refuse(caller, RefusalCode.CALLER_NOT_PM, "only the PM types into a lead's pane (D84)")
+            rule = layers.caller_rule(caller)  # D141: why the caller is not the PM
+            detail = layers.with_rule("only the PM types into a lead's pane (D84)", rule)
+            self._refuse(caller, RefusalCode.CALLER_NOT_PM, detail, rule=rule)
         try:
             vet_command(command)
         except InvalidArgs as exc:
@@ -170,8 +177,7 @@ class PaneCommand:
             binding = self._check_event(caller, txn.doc, event, role, command, item_id)
             doc = layers.consume(txn.doc, event, TOOL, target.agent.uid, "attempting")
             if binding.proposal_id:
-                prop = doc.proposals[binding.proposal_id]
-                doc = replace(doc, proposals={**doc.proposals, prop.id: replace(prop, used=True)})
+                doc = layers.use_proposal(doc, binding.proposal_id)
             txn.commit(doc)
         outcome = self._keypress(target, command)
         receipt = self._finish(caller, event, target, command, outcome, binding, item_id)
@@ -197,12 +203,12 @@ class PaneCommand:
             fresh=True,
             tokens=(command_name(command),),
             proposal=(role, command),
-            events=self.store.operator_events(),
-            unbound="the operator event neither names the command nor approves, as the very next prompt naming its "
-            "id P-<n>, the PM's latest proposal of exactly this text (D85, D97)",
+            ttl_s=self.proposal_ttl_s,
+            unbound="the operator event neither names the command nor approves, in a short prompt naming its id "
+            "P-<n> within proposal_ttl_s, an unused proposal of exactly this text and role (D85, D97, D141)",
         )
         if isinstance(bound, layers.Unbound):
-            self._refuse(caller, bound.code, bound.detail, item_id)
+            self._refuse(caller, bound.code, bound.detail, item_id, bound.rule)
         return bound
 
     def _target(self, caller: Caller, role: str, item_id) -> Target:
@@ -231,7 +237,12 @@ class PaneCommand:
         try:
             if self.pmx.interaction(target.agent.uid) not in IDLE_KINDS:
                 return ScreenKind.BUSY
-            return classify(self.tmux.capture(target.tmux_id))
+            screen = self.tmux.capture(target.tmux_id)
+            kind = classify(screen)
+            if kind is ScreenKind.DIRTY:  # D141: the box may show only a faint suggestion (typing replaces it)
+                if suggestion_only(self.tmux.capture_styled(target.tmux_id), prompt_text(screen)):
+                    return ScreenKind.IDLE
+            return kind
         except (ProjmuxUnavailable, TmuxFailed):
             return ScreenKind.UNKNOWN
 

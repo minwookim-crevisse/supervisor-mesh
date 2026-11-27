@@ -6,6 +6,8 @@ argv it receives to a JSONL log the test asserts on. tmux keeps an input box per
 into it, `send-keys C-u` empties it, `send-keys Enter` submits it (the box empties and the text is recorded),
 `capture-pane` renders the pane's screen with the box filled in. With `render_after = N` the typed text reaches the box
 only on the (N+1)-th capture after it was typed (D125: the slash menu renders first).
+With `suggest` / `suggest_styled` an empty box shows that suggestion (plain / in the `-e` capture, D141); typing
+replaces it, as in Claude Code.
 """
 
 from __future__ import annotations
@@ -108,16 +110,20 @@ if tool == "tmux":
     if "capture-pane" in args:
         pane = args[args.index("-t") + 1]
         p = st["tmux"][pane]
-        if p.get("next_screens"):  # a screen that changes between two captures
+        styled = "-e" in args  # D141: the styled capture shows the same state and never advances it
+        if p.get("next_screens") and not styled:  # a screen that changes between two captures
             p["screen"] = p["next_screens"].pop(0)
             save()
-        if p.get("pending") is not None:  # D125: typed text shows only after `render_after` more captures
+        if p.get("pending") is not None and not styled:  # D125: typed text shows only after `render_after` captures
             if p.get("render_after", 0) <= 0:
                 p["box"] = p.get("box", "") + p.pop("pending")
             else:
                 p["render_after"] -= 1
             save()
-        out(p["screen"].replace("{box}", p.get("box", "")))
+        shown = p.get("box", "")
+        if not shown and p.get("suggest"):  # D141: an empty box may show a suggestion (faint in the styled capture)
+            shown = p["suggest_styled"] if styled else p["suggest"]
+        out(p["screen"].replace("{box}", shown))
     if "send-keys" in args:
         pane = args[args.index("-t") + 1]
         p = st["tmux"][pane]

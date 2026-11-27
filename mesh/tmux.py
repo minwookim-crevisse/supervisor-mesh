@@ -1,7 +1,9 @@
 """tmux adapter and the screen classifier. Only `pane_command` uses it; the socket is projmux's (`tmux -L projmux`).
 
 `classify` is a POSITIVE match for an idle Claude Code prompt: the bottom-most input box (a `❯` line between two rules
-near the bottom, with no dialog or numbered menu below it) is empty and no turn is running. Anything else (a trust or
+near the bottom, with no dialog or numbered menu below it) is empty and no turn is running. D141: a box that holds
+text on the plain capture is still idle when `suggestion_only` finds, on a second `-e` capture, that the text is only
+a faint suggestion. Anything else (a trust or
 permission dialog, a running turn, a half-typed box, an unrecognised screen) is not IDLE, and pane_command refuses:
 it never answers a prompt. The patterns are a deliberate small copy of the repo verifier's `smv_screen.py`, which is
 repo-own and not importable from a shipped module.
@@ -84,6 +86,90 @@ def classify(screen: str) -> ScreenKind:
     return ScreenKind.IDLE
 
 
+_ESCAPE = re.compile(r"\x1b\[([0-9;:]*)([@-~])|\x1b[^\[]?")
+_BODY_SGR = frozenset({"", "0", "2", "22"})  # D141: inside the box body only faint on and the resets
+_OFF = {"22": ("faint", "bold"), "23": ("italic",), "24": ("underline",), "25": ("blink",), "27": ("inverse",),
+        "28": ("hidden",), "29": ("strike",), "39": ("fg",), "49": ("bg",)}  # fmt: skip
+_ON = {"1": "bold", "2": "faint", "3": "italic", "4": "underline", "5": "blink", "7": "inverse", "8": "hidden",
+       "9": "strike"}  # fmt: skip
+
+
+def _sgr(state: set[str], params: str) -> None:
+    """Apply one SGR sequence to `state` (the set of active non-default attributes)."""
+    parts = params.replace(":", ";").split(";")
+    i = 0
+    while i < len(parts):
+        p = parts[i] or "0"
+        if p == "0":
+            state.clear()
+        elif p in _ON:
+            state.add(_ON[p])
+        elif p in _OFF:
+            state.difference_update(_OFF[p])
+        elif p in ("38", "48"):
+            state.add("fg" if p == "38" else "bg")
+            i += 2 if i + 1 < len(parts) and parts[i + 1] == "5" else 4
+        elif p.isdigit() and (30 <= int(p) <= 37 or 90 <= int(p) <= 97):
+            state.add("fg")
+        elif p.isdigit() and (40 <= int(p) <= 47 or 100 <= int(p) <= 107):
+            state.add("bg")
+        else:
+            state.add(f"sgr{p}")
+        i += 1
+
+
+def _cells(line: str) -> tuple[list[tuple[str, frozenset[str], tuple[str, ...]]], tuple[str, ...]] | None:
+    """The line's cells as (character, its attributes, the SGR parameter strings right before it), and the SGR
+    parameters after the last cell; None for an escape that is not SGR (a cursor move or a mode change)."""
+    state: set[str] = set()
+    cells: list[tuple[str, frozenset[str], tuple[str, ...]]] = []
+    pending: list[str] = []
+    pos = 0
+    for m in _ESCAPE.finditer(line):
+        for ch in line[pos : m.start()]:
+            cells.append((ch, frozenset(state), tuple(pending)))
+            pending = []
+        if m.group(2) != "m":
+            return None
+        _sgr(state, m.group(1))
+        pending.append(m.group(1))
+        pos = m.end()
+    for ch in line[pos:]:
+        cells.append((ch, frozenset(state), tuple(pending)))
+        pending = []
+    return cells, tuple(pending)
+
+
+def suggestion_only(styled: str, box: str) -> bool:
+    """D141 (F4): the input box of the STYLED capture (`capture-pane -e`) holds `box` (the plain capture's box text)
+    and that body is only a faint suggestion: every non-space cell is faint (SGR 2) and nothing else is styled, and
+    no escape but faint-on and the resets appears inside the body. An inverse first cell (a cursor), a colour, bold,
+    mixed faint and plain cells, or style carried in from before the prompt mark = not a suggestion (typed text)."""
+    lines = styled.rstrip("\n").split("\n")[-60:]
+    plain_lines = [_ESCAPE.sub("", x) for x in lines]
+    span = _box_span(plain_lines)
+    if not box or span is None or prompt_text("\n".join(plain_lines)) != box:
+        return False
+    body: list[tuple[str, frozenset[str], tuple[str, ...]]] = []
+    escapes: list[str] = []
+    for n, i in enumerate(range(span[0] + 1, span[1])):
+        parsed = _cells(lines[i])
+        if parsed is None:
+            return False
+        cells, trailing = parsed
+        if n == 0:  # the body starts after the prompt mark and one space
+            mark = next((k for k, c in enumerate(cells) if c[0] in "❯>"), None)
+            if mark is None:
+                return False
+            cells = cells[mark + 1 :]
+            if cells and cells[0][0].isspace():
+                cells = cells[1:]
+        body += [c for c in cells if c[0] != "│"]
+        escapes += [e for c in cells for e in c[2]] + list(trailing)
+    ink = [attrs for ch, attrs, _ in body if not ch.isspace()]
+    return bool(ink) and all(attrs == {"faint"} for attrs in ink) and all(e in _BODY_SGR for e in escapes)
+
+
 def holds(screen: str, text: str) -> bool:
     """The prompt box holds exactly the typed text (whitespace ignored: the box wraps long lines)."""
     box = prompt_text(screen)
@@ -115,6 +201,10 @@ class Tmux:
 
     def capture(self, pane_id: str, lines: int = 60) -> str:
         return self._run("capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{lines}")
+
+    def capture_styled(self, pane_id: str, lines: int = 60) -> str:
+        """D141: the same capture with its SGR escapes (`-e`), used only to tell a faint suggestion from typed text."""
+        return self._run("capture-pane", "-e", "-p", "-J", "-t", pane_id, "-S", f"-{lines}")
 
     def type_literal(self, pane_id: str, text: str) -> None:
         """`-l`: the text is typed as literal keys (no key names), and `--` ends the options."""

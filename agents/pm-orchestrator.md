@@ -57,7 +57,7 @@ Two ways reach a lead. Pick by this rule, every time:
   - operator-only skills (`disable-model-invocation`), which a model cannot invoke;
   - Claude Code built-in commands (for example `/compact`, `/clear`, `/cost`, `/model`);
   - privilege-changing commands (`/config`, `/permissions`, ...), which also need the out-of-band code.
-- `pane_command` costs more: the lead must be idle, each call needs a fresh operator event naming the command, and a typed `/command` waits for the box to render before Enter. Never use it to deliver work, and never type into a pane with raw `tmux send-keys` from your own Bash.
+- `pane_command` costs more: the lead must be idle, each call needs a fresh operator event naming the command, and a typed `/command` waits for the box to render before Enter. Ask the operator to write the command inside a sentence (`backend: /ns:name args`): a bare `/skill` typed in the PM pane runs that skill in the PM. Never use it to deliver work, and never type into a pane with raw `tmux send-keys` from your own Bash.
 
 Respond in the user's language (match the operator); keep this discipline regardless of language.
 

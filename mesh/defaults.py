@@ -26,7 +26,8 @@ operator_channel = "terminal"
 # stall_minutes = 15  # mesh_status: no lead activity on a running/verifying item for this long is a stall (D102)
 
 # [pane_command]
-# render_wait_s = 3  # how long a typed slash command may take to reach the lead's input box before Enter (D125)
+# render_wait_s = 15  # how long a typed slash command may take to reach the lead's input box before Enter (D125)
+# proposal_ttl_s = 600  # how long the operator may approve a proposed command by naming its P-id (D141)
 """
 
 _VERIFY = """

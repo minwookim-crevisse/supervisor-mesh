@@ -348,7 +348,12 @@ def actor_for(caller, item: Item | None, verb: Verb) -> Actor | None:
 
 
 def _refuse(
-    req: Request, code: RefusalCode, detail: str, row: Row | None = None, actor: Actor | None = None
+    req: Request,
+    code: RefusalCode,
+    detail: str,
+    row: Row | None = None,
+    actor: Actor | None = None,
+    rule: str | None = None,
 ) -> Refused:
     return Refused(
         Refusal(
@@ -361,6 +366,7 @@ def _refuse(
             req.item_id,
             row.id if row else None,
             req.caller.agent_uid,
+            rule,
         )
     )
 
@@ -369,7 +375,8 @@ def _resolve(doc: Doc, req: Request) -> tuple[Row, Item | None] | Refused:
     """Which row applies to this request, or why none does. Refuses: unknown caller, unknown item, not in the table."""
     if req.caller.kind is CallerKind.UNKNOWN:
         why = req.caller.why or "the caller has no role label (D82)"
-        return _refuse(req, RefusalCode.UNKNOWN_CALLER, f"{why}: no verbs")
+        rule = req.caller.rule or "unknown_caller"  # D141: why the caller is not resolved or not proven (fixed code)
+        return _refuse(req, RefusalCode.UNKNOWN_CALLER, layers.with_rule(f"{why}: no verbs", rule), rule=rule)
     item = doc.items.get(req.item_id or "")
     if req.verb is not Verb.NEW and item is None:
         return _refuse(req, RefusalCode.UNKNOWN_ITEM, f"no item {req.item_id!r}")

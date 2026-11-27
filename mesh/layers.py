@@ -10,8 +10,8 @@ A test (tests/test_mesh_review_w5.py) asserts that no other module re-implements
   refusal recording   `record_refusal` / `refuse`: the only caller of `Store.append_refusal`
   receipts            `write_receipt`: the only caller of `Store.append_receipt` (one seq, one locked write)
   operator binding    `resolve_event` (the only caller of `Store.get_event`), `bind_event` (exists, unused, fresh,
-                      bound: the D85 name path or the D97 proposal path), `consume` / `set_use_status` (the single-use
-                      ledger), `propose`, `recover_attempting`
+                      bound: the D85 name path or the D97/D141 proposal path), `consume` / `set_use_status` (the
+                      single-use ledger), `propose`, `use_proposal`, `recover_attempting`
   retry               `retry`: bounded attempts with exponential backoff, only while the outcome is transient
   output checks       `output_failure`: a `fail_if_output` literal substring in a line of a passing command's output
                       (D92, D115: never a regex)
@@ -108,8 +108,10 @@ def refuse(store: Store, refusal: Refusal) -> NoReturn:
     raise RefusedError(refusal)
 
 
-def tool_refusal(subject: str, code: RefusalCode, detail: str, at: str, caller: Caller, item_id=None) -> Refusal:
-    return Refusal(subject, code, detail, at, caller.kind.value, None, item_id, None, caller.agent_uid)
+def tool_refusal(
+    subject: str, code: RefusalCode, detail: str, at: str, caller: Caller, item_id=None, rule: str | None = None
+) -> Refusal:
+    return Refusal(subject, code, detail, at, caller.kind.value, None, item_id, None, caller.agent_uid, rule)
 
 
 # ---------------------------------------------------------------- receipts / audit log
@@ -210,6 +212,11 @@ class Bound:
 class Unbound:
     code: RefusalCode
     detail: str
+    rule: str | None = None  # D141: the failing rule, also at the end of `detail` (a fixed code, never prompt text)
+
+
+def _unbound(code: RefusalCode, detail: str, rule: str) -> Unbound:
+    return Unbound(code, with_rule(detail, rule), rule)
 
 
 def bind_event(
@@ -219,17 +226,19 @@ def bind_event(
     fresh: bool,
     tokens: Sequence[str] | None = None,
     proposal: tuple[str, str] | None = None,
-    events: Iterable[OperatorEvent] = (),
+    ttl_s: float = 600,
     unbound: str = "the operator event does not name what it authorises",
 ) -> Bound | Unbound:
     """THE operator-event binding. In order: the event exists (hook-recorded), is unused (single use, D63), is proven
     when it is a candidate (D123: `resolve_event` ran the proof), is the newest operator prompt when `fresh` (by mesh
     seq, D74), and, when `tokens` is given, is bound:
       name path      the event text names one of `tokens` as a whole token (`names`)
-      proposal path  `proposal` = (role, exact text): the latest proposal before the event has exactly that text and
-                     role, is unused, the event is the FIRST operator prompt after it, and the event text names the
-                     proposal id `P-<n>` as a whole token (D97: any other prompt, a "no" included, approves nothing)
-    `events` are the genuine operator events (for "the first prompt after the proposal")."""
+      proposal path  `proposal` = (role, exact text), D97 as amended by D141: the event text holds exactly one
+                     proposal id `P-<n>` (a whole token, case-insensitive) and at most PROMPT_MAX characters, and
+                     that NAMED proposal has exactly that role and text, is unused, was stored before the event and
+                     at most `ttl_s` before the event's record time (a proposal without `at` is expired). Any other
+                     prompt, a "no" included, approves nothing.
+    A refusal carries the failing rule (D141), a fixed code."""
     if event is None:
         return Unbound(RefusalCode.EVENT_UNKNOWN, "no operator event with that id was recorded by the PM-pane hook")
     if event.id in doc.event_uses:
@@ -238,30 +247,64 @@ def bind_event(
     if proof is not None and proof.status != "proven":  # D123: a candidate needs its transcript proof
         if proof.why == "transcript_entry_reused":
             return Unbound(RefusalCode.EVENT_REUSED, "its transcript entry already backed another operator event")
-        return Unbound(
+        return _unbound(
             RefusalCode.EVENT_UNPROVEN,
             "the operator event is not backed by the latest real user prompt of the PM transcript (D110, D123)",
+            proof.why or "proof_not_run",
         )
     if fresh and event.seq != doc.last_operator_seq:
-        return Unbound(RefusalCode.EVENT_STALE, "a newer operator prompt was recorded after it: cite the latest one")
+        return _unbound(
+            RefusalCode.EVENT_STALE, "a newer operator prompt was recorded after it: cite the latest one", "stale"
+        )
     if tokens is None:
         return Bound(event, "event")
     if any(names(event.text, t) for t in tokens):
         return Bound(event, "name")
-    if proposal is not None:
-        role, command = proposal
-        before = [p for p in doc.proposals.values() if p.seq < event.seq]
-        prop = max(before, key=lambda p: p.seq) if before else None
-        if (
-            prop is not None
-            and not prop.used
-            and prop.role == role
-            and prop.command == command
-            and names(event.text, prop.id)
-            and not any(prop.seq < e.seq < event.seq for e in events)
-        ):
-            return Bound(event, "proposal", prop.id)
-    return Unbound(RefusalCode.EVENT_NOT_BOUND, unbound)
+    ids = proposal_ids(event.text) if proposal is not None else []
+    rule = _approval_rule(doc, event, proposal, ids, ttl_s) if ids else "not_named"
+    if rule is None:
+        return Bound(event, "proposal", ids[0])
+    return _unbound(RefusalCode.EVENT_NOT_BOUND, unbound, rule)
+
+
+PROMPT_MAX = 80  # D141: the characters of an approving prompt (a P-id inside a long message approves nothing)
+_PID = re.compile(rf"(?<![{_TOKEN}])[Pp]-([0-9]+)(?![A-Za-z0-9_:-])(?!\.+[A-Za-z0-9_])")
+
+
+def proposal_ids(event_text: str) -> list[str]:
+    """D97 + D141: every proposal id token `P-<n>` in the text, case-insensitive (`p-205` is `P-205`), in order."""
+    return [f"P-{m.group(1)}" for m in _PID.finditer(event_text)]
+
+
+def _approval_rule(doc: Doc, event: OperatorEvent, proposal, ids: list[str], ttl_s: float) -> str | None:
+    """D141: None when the event approves the proposal it names, else the failing rule."""
+    if len(ids) != 1:
+        return "more_than_one_id"
+    if len(event.text) > PROMPT_MAX:
+        return "prompt_too_long"
+    prop = doc.proposals.get(ids[0])
+    if prop is None or (prop.role, prop.command) != proposal:
+        return "not_named"
+    if prop.used:
+        return "proposal_used"
+    if prop.seq >= event.seq:
+        return "not_first_after_proposal"  # the prompt came before the proposal
+    stored, recorded = _utc(prop.at), _utc(event.at)
+    if stored is None or recorded is None or (recorded - stored).total_seconds() > ttl_s:
+        return "proposal_expired"
+    return None
+
+
+def use_proposal(doc: Doc, proposal_id: str) -> Doc:
+    """D141: mark the approved proposal used, and with it every other unused proposal of the same role and command
+    (one approval never leaves a sibling to approve the same keypress again)."""
+    prop = doc.proposals[proposal_id]
+    used = {
+        k: replace(p, used=True)
+        for k, p in doc.proposals.items()
+        if k == proposal_id or (not p.used and (p.role, p.command) == (prop.role, prop.command))
+    }
+    return replace(doc, proposals={**doc.proposals, **used})
 
 
 def consume(doc: Doc, event: OperatorEvent, kind: str, ref: str, status: str | None = None) -> Doc:
@@ -273,11 +316,12 @@ def set_use_status(doc: Doc, event_id: str, status: str) -> Doc:
     return replace(doc, event_uses={**doc.event_uses, event_id: replace(doc.event_uses[event_id], status=status)})
 
 
-def propose(store: Store, role: str, command: str, by_uid: str | None) -> Proposal:
-    """D85 proposal path: the exact text under the next mesh seq, id `P-<seq>` (D97: the approval must name it)."""
+def propose(store: Store, role: str, command: str, by_uid: str | None, at: str) -> Proposal:
+    """D85 proposal path: the exact text under the next mesh seq, id `P-<seq>` (D97: the approval must name it),
+    stored with its UTC time `at` (D141: the start of its proposal_ttl_s)."""
     with store.locked() as txn:
         seq = txn.doc.seq + 1
-        prop = Proposal(f"P-{seq}", seq, role, command, by_uid)
+        prop = Proposal(f"P-{seq}", seq, role, command, by_uid, at=at)
         txn.commit(replace(txn.doc, seq=seq, proposals={**txn.doc.proposals, prop.id: prop}))
     return prop
 
@@ -439,6 +483,23 @@ OTHER_PM_WHY = (
 )
 
 
+PM_GATE_RULES = {PM_AMBIGUOUS_WHY: "pm_ambiguous", NOT_PINNED_WHY: "pm_not_pinned", OTHER_PM_WHY: "not_pinned_pm"}
+# D141: the fixed rule of each `pm_gate` answer (the hook_error codes of the same cases)
+
+
+def caller_rule(caller: Caller) -> str:
+    """D141: why `caller` is not the PM, as the fixed code a caller_not_pm refusal carries: an UNKNOWN caller's own
+    rule (resolve, ancestry or pm_gate) or `unknown_caller` (an injected UNKNOWN without one); any other caller
+    `not_pm_role`."""
+    if caller.kind is CallerKind.UNKNOWN:
+        return caller.rule or "unknown_caller"
+    return "not_pm_role"
+
+
+def with_rule(detail: str, rule: str) -> str:
+    return f"{detail} (rule: {rule})"
+
+
 def pm_gate(store: Store, agent_uid: str | None, live_pms: int, *, unpinned_ok: bool = False) -> str | None:
     """D109: why a role=pm caller may NOT act as the PM, or None. Exactly one live role=pm agent, and it is the pinned
     one. `unpinned_ok` (mesh_init only): the pin itself is decided by mesh_init (first pin, migration, re-pin)."""
@@ -458,8 +519,8 @@ def pm_gate(store: Store, agent_uid: str | None, live_pms: int, *, unpinned_ok: 
 def proven_caller(resolve: Callable[[], Caller], store: Store, tool: str | None = None) -> Caller:
     """The caller of a NON-read-only call. A production resolver (`identity.PaneCaller`) is checked: the calling
     process descends from the named pane's claude process (D108; no claude pid = fail closed) and a PM passes
-    `pm_gate` (D109). A failed check is UNKNOWN with a `why` the refusal shows. An injected caller (tests) is taken
-    as given."""
+    `pm_gate` (D109). A failed check is UNKNOWN with a `why` the refusal shows and its fixed `rule` (D141). An
+    injected caller (tests) is taken as given."""
     resolved = getattr(resolve, "resolved", None)
     if resolved is None:
         return resolve()
@@ -470,11 +531,11 @@ def proven_caller(resolve: Callable[[], Caller], store: Store, tool: str | None 
     if caller.kind is CallerKind.UNKNOWN:
         return caller
     if not identity.descends_from(os.getpid(), r.claude_pid):
-        return Caller.unknown(ANCESTRY_WHY)
+        return Caller.unknown(ANCESTRY_WHY, "not_descendant")
     if caller.kind is CallerKind.PM:
         why = pm_gate(store, caller.agent_uid, r.live_pms, unpinned_ok=tool == "mesh_init")
         if why:
-            return Caller.unknown(why)
+            return Caller.unknown(why, PM_GATE_RULES[why])
     return caller
 
 
@@ -498,7 +559,10 @@ def _prompt_text(entry: Any) -> str | None:
     """The text of a REAL operator prompt entry, else None. Structural and positive (D123, the Claude Code 2.1.327
     shapes): type user, isMeta not true, not a sidechain, origin.kind == "human" (required: no origin or no kind is not
     a prompt; peer messages, task notifications, auto-continuations and any unknown kind are not), and the content a
-    string or text-only blocks (never a tool_result). Never decided by the text."""
+    string or text-only blocks (never a tool_result). Never decided by the text. D141 (F2): a prompt typed while the
+    PM was busy is an `attachment` entry (`_queued_prompt`)."""
+    if isinstance(entry, dict) and entry.get("type") == "attachment":
+        return _queued_prompt(entry)
     if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isMeta") is True:
         return None
     if entry.get("isSidechain") is True:
@@ -516,6 +580,40 @@ def _prompt_text(entry: Any) -> str | None:
         texts = [b.get("text") for b in content]
         return "\n".join(texts) if all(isinstance(t, str) for t in texts) else None
     return None
+
+
+def _queued_prompt(entry: dict) -> str | None:
+    """D141 (F2): a queued operator prompt: `attachment.type == "queued_command"`, the origin INSIDE the attachment
+    with kind human, `humanTurn` exactly true, `commandMode == "prompt"`, isMeta not true (attachment or entry), not
+    a sidechain, and `attachment.prompt` a string. Peer deliveries (origin peer, isMeta) and task notifications are
+    not prompts."""
+    att = entry.get("attachment")
+    if entry.get("isSidechain") is True or entry.get("isMeta") is True or not isinstance(att, dict):
+        return None
+    origin = att.get("origin")
+    if att.get("type") != "queued_command" or not isinstance(origin, dict) or origin.get("kind") != "human":
+        return None
+    if att.get("humanTurn") is not True or att.get("commandMode") != "prompt" or att.get("isMeta") is True:
+        return None
+    prompt = att.get("prompt")
+    return prompt if isinstance(prompt, str) else None
+
+
+_SLASH_TAG = re.compile(
+    r"<command-message>[^\n]*?</command-message>\n<command-name>/([A-Za-z0-9_][A-Za-z0-9_.:-]*)</command-name>"
+    r"(?:\n<command-args>(.*?)</command-args>)?",
+    re.DOTALL,
+)
+
+
+def _slash_form(text: str, prompt: str) -> bool:
+    """D141 (F1): a human slash prompt is written to the transcript in tag form; when the WHOLE entry text
+    fullmatches it and the hook prompt starts with `/`, it equals the hook prompt as `/NAME ARGS`, whitespace
+    collapsed on both sides. The reversed tag order and any other text around the tags are not this form."""
+    m = _SLASH_TAG.fullmatch(text) if prompt.startswith("/") else None
+    if m is None:
+        return False
+    return " ".join(f"/{m.group(1)} {m.group(2) or ''}".split()) == " ".join(prompt.split())
 
 
 def _latest_prompt_entry(path: str, prompt: str) -> tuple[str, Any] | None:
@@ -542,7 +640,8 @@ def _latest_prompt_entry(path: str, prompt: str) -> tuple[str, Any] | None:
             text = _prompt_text(entry)
             if text is not None:
                 uuid = entry.get("uuid")
-                latest = (uuid if isinstance(uuid, str) and uuid else None, text == prompt, entry.get("timestamp"))
+                same = text == prompt or (entry.get("type") == "user" and _slash_form(text, prompt))
+                latest = (uuid if isinstance(uuid, str) and uuid else None, same, entry.get("timestamp"))
     if latest is None or not latest[1] or latest[0] is None:
         return None
     return latest[0], latest[2]
@@ -986,10 +1085,14 @@ def once_per_request(ctx, *, read_only: bool = False, tool: str | None = None):
     return replace(ctx, caller=caller)
 
 
-def _error(code: str, message: str, hint: str | None = None, reason: str | None = None) -> ToolResult:
+def _error(
+    code: str, message: str, hint: str | None = None, reason: str | None = None, rule: str | None = None
+) -> ToolResult:
     error = {"code": code, "message": message}
     if reason:
         error["reason"] = reason
+    if rule:
+        error["rule"] = rule  # D141: the failing binding or proof rule
     if hint:
         error["hint"] = hint
     return ToolResult(False, {"ok": False, "error": error})
@@ -1008,7 +1111,7 @@ def tool_layer(
             data = fn(ctx, from_json(args_type, dict(arguments or {})))
             return ToolResult(True, {"ok": True, **data})
         except RefusedError as exc:
-            return _error("refused", exc.refusal.detail, reason=exc.refusal.code.value)
+            return _error("refused", exc.refusal.detail, reason=exc.refusal.code.value, rule=exc.refusal.rule)
         except MeshError as exc:
             return _error(exc.code, str(exc), exc.hint)
         except Exception as exc:  # a bug: one stderr line, the error TYPE and a fixed id (a message can carry a path)

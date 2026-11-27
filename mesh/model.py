@@ -187,6 +187,8 @@ class Caller:
     role: str | None = None  # LEAD: its role label
     agent_uid: str | None = None  # recorded in history; never echoed in public refusal text
     why: str | None = None  # UNKNOWN only: what the operator can do about it (D108, D109); fixed text, no values
+    # UNKNOWN only: WHY it is not resolved or not proven (D141, a fixed code). Diagnostic: not part of who it is
+    rule: str | None = field(default=None, compare=False)
 
     @staticmethod
     def pm(agent_uid: str | None = None) -> "Caller":
@@ -197,8 +199,8 @@ class Caller:
         return Caller(CallerKind.LEAD, role, agent_uid)
 
     @staticmethod
-    def unknown(why: str | None = None) -> "Caller":
-        return Caller(CallerKind.UNKNOWN, why=why)
+    def unknown(why: str | None = None, rule: str | None = None) -> "Caller":
+        return Caller(CallerKind.UNKNOWN, why=why, rule=rule)
 
     @staticmethod
     def mesh() -> "Caller":
@@ -654,8 +656,8 @@ class EventProof:
 
 @dataclass(frozen=True, slots=True)
 class Proposal:
-    """D85 proposal path: the exact command the PM proposed, stored under the mesh seq BEFORE the operator's next
-    prompt approves it. Single use."""
+    """D85 proposal path: the exact command the PM proposed, stored under the mesh seq BEFORE the operator's prompt
+    approves it. Single use. D141: `at` (UTC) starts its `proposal_ttl_s`; a stored proposal without it is expired."""
 
     id: str
     seq: int
@@ -663,6 +665,7 @@ class Proposal:
     command: str
     by_uid: str | None
     used: bool = False
+    at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,7 +845,8 @@ class Config:
     dispatch_backoff_s: float = 1.0  # D93: the first wait, doubled per attempt
     stall_minutes: int = 15  # D102: no lead activity on a running / verifying item for this long is a stall
     confirm_timeout_s: int = 120  # D113: how long the operator has to type the popup's code
-    pane_render_wait_s: float = 3  # D125: how long pane_command waits for the typed text to reach the input box
+    pane_render_wait_s: float = 15  # D125: how long pane_command waits for the typed text to reach the input box
+    pane_proposal_ttl_s: float = 600  # D141: how long a pane_command proposal can be approved by its P-id
 
     def verify_hash(self) -> str:
         """sha256 over the canonical JSON of the evidence-relevant inputs (D47). Limits do not change it; an empty
@@ -895,6 +899,7 @@ class Refusal:
     item_id: str | None = None
     row_id: str | None = None
     actor_uid: str | None = None
+    rule: str | None = None  # D141: the failing binding, proof or caller rule (a fixed code, never prompt text)
 
 
 @dataclass(frozen=True, slots=True)

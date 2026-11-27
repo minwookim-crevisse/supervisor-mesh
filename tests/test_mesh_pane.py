@@ -212,7 +212,7 @@ class PaneCommandRequiredTests(PaneCase):
         self.pc("/compact keep the plan", propose=True)
         self.event("hmm, wait")
         later = self.event("ok now")
-        self.refused(self.pc("/compact keep the plan", later), "event_not_bound")  # not the very next prompt
+        self.refused(self.pc("/compact keep the plan", later), "event_not_bound")  # D141: no P-id, approves nothing
         self.assertEqual(self.keys(), [])
 
 
@@ -405,14 +405,14 @@ class RenderWaitTests(PaneCase):
 
 
 class RenderWaitConfigTests(unittest.TestCase):
-    def test_render_wait_s_is_parsed_with_a_default_of_three(self):
+    def test_render_wait_s_is_parsed_with_a_default_of_fifteen(self):
         from mesh import defaults, store
 
-        self.assertEqual(store.parse_config("").pane_render_wait_s, 3)
+        self.assertEqual(store.parse_config("").pane_render_wait_s, 15)
         self.assertEqual(store.parse_config("[pane_command]\nrender_wait_s = 1.5\n").pane_render_wait_s, 1.5)
         self.assertEqual(store.parse_config("[pane_command]\nrender_wait_s = 30\n").pane_render_wait_s, 30)
-        self.assertEqual(store.parse_config(defaults.config_toml("ts")).pane_render_wait_s, 3)
-        self.assertIn("# [pane_command]\n# render_wait_s = 3", defaults.config_toml(None))
+        self.assertEqual(store.parse_config(defaults.config_toml("ts")).pane_render_wait_s, 15)
+        self.assertIn("# [pane_command]\n# render_wait_s = 15 ", defaults.config_toml(None))
 
     def test_invalid_render_wait_s_values_are_refused(self):
         from mesh import store
