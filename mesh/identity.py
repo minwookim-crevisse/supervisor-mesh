@@ -9,6 +9,8 @@ No fallback guessing: a missing variable, no or several matching panes, an empty
 member, an invalid role, or projmux failing all resolve to UNKNOWN. `reason` names the case, never an env value; the
 UNKNOWN caller's `rule` is its fixed code (D141: no_pane_env, no_pane, ambiguous_pane, not_managed, projmux_unavailable,
 not_member, invalid_role), shown by every caller_not_pm refusal.
+`agents`, when given, is projmux's agents answer already fetched for this request (D135: `mesh_status` asks once); a
+`ProjmuxUnavailable` there is that fetch's failure and resolves exactly as a failing fetch here would.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .model import ROLE_PATTERN, Caller
-from .projmux import Projmux, ProjmuxUnavailable
+from .projmux import Agent, Projmux, ProjmuxUnavailable
 
 PANE_VAR = "PMX_INTERNAL_ACTIVATION_PANE_UID"
 
@@ -34,7 +36,12 @@ class Resolved:
     live_pms: int = 0  # live role=pm members of this project (D109: exactly one may act as the PM)
 
 
-def resolve(env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux) -> Resolved:
+def resolve(
+    env: Mapping[str, str],
+    root: str | os.PathLike,
+    pmx: Projmux,
+    agents: tuple[Agent, ...] | ProjmuxUnavailable | None = None,
+) -> Resolved:
     pane_uid = env.get(PANE_VAR) or ""
     if not pane_uid:
         return Resolved(Caller.unknown(rule="no_pane_env"), "not inside a managed projmux pane")
@@ -47,7 +54,9 @@ def resolve(env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux) -> Re
         agent_uid, claude_pid = matches[0].agent_uid, matches[0].claude_pid
         if not agent_uid:
             return Resolved(Caller.unknown(rule="not_managed"), "this pane is not a managed agent")
-        members = pmx.live_members(root)
+        if isinstance(agents, ProjmuxUnavailable):
+            raise agents
+        members = pmx.live_members(root, agents=agents)
         member = next((a for a in members if a.uid == agent_uid), None)
     except ProjmuxUnavailable:
         return Resolved(Caller.unknown(rule="projmux_unavailable"), "projmux unavailable")
@@ -70,8 +79,8 @@ class PaneCaller:
     def __init__(self, env: Mapping[str, str], root: str | os.PathLike, pmx: Projmux):
         self.env, self.root, self.pmx = env, root, pmx
 
-    def resolved(self) -> Resolved:
-        return resolve(self.env, self.root, self.pmx)
+    def resolved(self, agents: tuple[Agent, ...] | ProjmuxUnavailable | None = None) -> Resolved:
+        return resolve(self.env, self.root, self.pmx, agents)
 
     def __call__(self) -> Caller:
         return self.resolved().caller

@@ -26,6 +26,7 @@ from . import (
     dispatch,
     facts,
     git,
+    hints,
     identity,
     init,
     layers,
@@ -36,6 +37,7 @@ from . import (
     status,
     tracker,
     verify,
+    view,
 )
 from .engine import Engine
 from .model import (
@@ -60,7 +62,7 @@ from .model import (
     item_json,
     json_schema,
 )
-from .projmux import Projmux, ProjmuxUnavailable
+from .projmux import Agent, Projmux, ProjmuxUnavailable
 from .store import Store
 from .tmux import Tmux, TmuxFailed, valid_pane_id
 
@@ -110,6 +112,13 @@ class Context:
     env: Mapping[str, str] = field(default_factory=dict)
     pmx: Projmux | None = None
     tmux: Tmux | None = None
+    # the production caller (the calling pane), kept across `layers.once_per_request` so `mesh_status` can resolve it
+    # from the agents answer it already fetched (D135); None for an injected caller
+    pane_caller: identity.PaneCaller | None = None
+
+    def __post_init__(self) -> None:
+        if self.pane_caller is None and isinstance(self.caller, identity.PaneCaller):
+            self.pane_caller = self.caller
 
     @classmethod
     def for_project(
@@ -296,7 +305,7 @@ def _pm_only(ctx: Context, subject: str, caller: Caller) -> None:
     is nowhere to record it); an UNKNOWN caller is told how to become the PM (D82)."""
     if caller.kind is CallerKind.PM:
         return
-    hint = caller.why or init.PM_LABEL_HINT
+    hint = caller.why or hints.PM_LABEL_HINT
     detail = f"{subject} is a PM tool" + (f"; {hint}" if caller.kind is CallerKind.UNKNOWN else "")
     rule = layers.caller_rule(caller)  # D141: why the caller is not the PM
     _refuse(ctx, subject, RefusalCode.CALLER_NOT_PM, layers.with_rule(detail, rule), caller, rule)
@@ -340,21 +349,16 @@ def mesh_init(ctx: Context, args: InitArgs) -> dict:
     install = companions.plan_for(have)
     nxt = []
     if caller.kind is not CallerKind.PM:
-        nxt.append(init.PM_LABEL_HINT)
+        nxt.append(hints.PM_LABEL_HINT)
     if result.exit_code == 3:
-        nxt.append(
-            "the stack is ambiguous (no single package.json / pyproject.toml): ask the operator ts | python | none"
-        )
+        nxt.append(hints.STACK_AMBIGUOUS)
     elif not result.applied:
-        nxt.append(f"show these rows to the operator, then call mesh_init with apply=true and plan_id={result.plan_id}")
+        nxt.append(hints.show_plan(result.plan_id))
     else:
-        nxt.append("fill docs/harness/part-b-checklist.md (Part B: ask the operator, never invent values)")
+        nxt.append(hints.PART_B)
     nxt.extend(result.hints)  # D134: no git author for this project (read-only; init sets none)
     if install["steps"]:
-        nxt.append(
-            "missing companions: the operator names `companions_install` (the whole plan) or one plugin name in a "
-            "prompt in the PM pane; then call companions_install with that prompt's event id"
-        )
+        nxt.append(hints.COMPANIONS_MISSING)
     return {
         "applied": result.applied,
         "stack": result.stack,
@@ -488,49 +492,42 @@ def _root(ctx: Context) -> Path:
     read_only=True,
 )
 def mesh_status(ctx: Context, args: StatusArgs) -> dict:
-    caller = ctx.caller()
-    try:
-        doc = ctx.store.read().doc
-        initialized = True
-    except NotInitialized:
-        doc, initialized = None, False
-    items = sorted(doc.items.values(), key=lambda i: i.id) if doc else []
-    by_state: dict[str, list[str]] = {}
-    for item in items:
-        by_state.setdefault(item.phase.value, []).append(item.id)
-    roles = {i.contract.role for i in items if not i.phase.terminal}
-    live: set[str] | None = None
-    agents: tuple = ()
+    return view.render(view.project_view(_status_snapshot(ctx, args.metrics)))
+
+
+def _status_snapshot(ctx: Context, want_metrics: bool) -> view.Snapshot:
+    """All of `mesh_status`'s I/O (D135). projmux `get agents` is asked ONCE: the caller's identity, the leads and the
+    D102 stall layer read the same answer; when that fetch fails, each of them sees the failure."""
+    agents: tuple[Agent, ...] | ProjmuxUnavailable | None = None
     if ctx.pmx is not None and ctx.root is not None:
         try:
-            agents = ctx.pmx.agents()  # asked once: the leads and the D102 stall layer read the same answer
-            live = {a.role for a in ctx.pmx.live_members(ctx.root, agents=agents) if a.role != "pm"}
-        except ProjmuxUnavailable:
-            live = None
-    out = {
-        "initialized": initialized,
-        "identity": {"kind": caller.kind.value, "role": caller.role},
-        "items": by_state,
-        "leads": [{"role": r, "present": None if live is None else r in live} for r in sorted(roles | (live or set()))],
-        "pending_actions": [
-            {"item_id": i.id, "action_id": a.action_id, "kind": a.kind.value, "attempts": attempt_log(a)}
-            for i in items
-            for a in i.pending_actions
-            if not a.done
-        ],
-        "companions": companions.present(_home(ctx.env), ctx.root) if ctx.root else {},
-        "launcher": init.launcher_health(ctx.root, PLUGIN_ROOT) if ctx.root else "missing",
-        "last_event": _last_event(ctx) if initialized else None,
-        "overlaps": status.overlaps(doc) if doc else [],
-        "stalls": status.stalls(doc, agents, ctx.root, ctx.clock(), config_or_defaults(ctx))
+            agents = ctx.pmx.agents()
+        except ProjmuxUnavailable as exc:
+            agents = exc
+    pane = ctx.pane_caller
+    if pane is not None and agents is not None and pane.pmx is ctx.pmx:
+        caller = pane.resolved(agents).caller
+    else:
+        caller = ctx.caller()
+    try:
+        doc = ctx.store.read().doc
+    except NotInitialized:
+        doc = None
+    live = None
+    if isinstance(agents, tuple):
+        live = frozenset(a.role for a in ctx.pmx.live_members(ctx.root, agents=agents) if a.role != "pm")
+    return view.Snapshot(
+        caller=caller,
+        doc=doc,
+        live=live,
+        companions=companions.present(_home(ctx.env), ctx.root) if ctx.root else {},
+        launcher=init.launcher_health(ctx.root, PLUGIN_ROOT) if ctx.root else "missing",
+        events=tuple(ctx.store.operator_events()) if doc is not None else (),
+        stalls=tuple(status.stalls(doc, agents, ctx.root, ctx.clock(), config_or_defaults(ctx)))
         if doc and ctx.root and live is not None
-        else [],
-    }
-    if live is None:
-        out["projmux"] = "unavailable"
-    if args.metrics:
-        out["metrics"] = metrics.counters(doc, ctx.store.operator_events()) if doc else None
-    return out
+        else (),
+        metrics=want_metrics,
+    )
 
 
 @tool(
@@ -544,12 +541,6 @@ def mesh_status(ctx: Context, args: StatusArgs) -> dict:
 )
 def mesh_metrics(ctx: Context, args: NoToolArgs) -> dict:
     return metrics.counters(ctx.store.read().doc, ctx.store.operator_events())
-
-
-def _last_event(ctx: Context) -> dict | None:
-    """The newest genuine operator event: id and seq only (never its text): proof the PM-pane hook is recording."""
-    events = ctx.store.operator_events()
-    return {"id": events[-1].id, "seq": events[-1].seq} if events else None
 
 
 def _home(env: Mapping[str, str]) -> Path | None:
@@ -685,7 +676,7 @@ def _send_order(ctx: Context, item: Item, action) -> dict:
         actions.mark_done(ctx.store, item.id, action.action_id, {"superseded": why})
         return {"action_id": action.action_id, "sent": False, "superseded": True}
     cfg = config_or_defaults(ctx)
-    attempts = attempt_log(action)
+    attempts = view.attempt_log(action)
 
     def attempt(n: int):  # D93: every attempt is recorded on the pending action before the next one
         sent = pmx.send(payload["target_uid"], payload.get("source_uid") or None, text, payload["message_ref"])
@@ -705,12 +696,6 @@ def _send_order(ctx: Context, item: Item, action) -> dict:
         "sent": outcomes[-1].delivered,
         "attempts": attempts[-len(outcomes) :],
     }
-
-
-def attempt_log(action) -> list[str]:
-    """The D93 attempts recorded on a dispatch action (comma-joined in its payload: a payload value is a string)."""
-    raw = action.payload.get("attempts", "")
-    return raw.split(",") if raw else []
 
 
 def config_or_defaults(ctx: Context) -> Config:

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import defaults, git, layers, tracker
+from .hints import AMBIGUOUS, AUTHOR_HINT, NEXT  # D135: the texts live in the catalogue
 from .model import empty_doc
 from .store import Store
 
@@ -34,11 +35,6 @@ TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 AGENTS_MARKER = "<!-- supervisor-mesh:harness -->"
 GITIGNORE_LINES = [".env", ".env.*", "!.env.example", ".auth/", "*.sqlite", "*.sqlite3", "*:Zone.Identifier"]
 USAGE = "supervisor-mesh init — lay the primed 4-pillar harness into a project."
-AMBIGUOUS = "STACK AMBIGUOUS — no single package.json / pyproject.toml found. Rerun with --stack ts|python|none."
-NEXT = "# next: fill docs/harness/part-b-checklist.md (Part B — never invent these)"
-AUTHOR_HINT = (  # D134 (A7): read-only; init never sets a git identity
-    '# hint: git user.name is not set for this project; set it before the first commit: git config user.name "<name>"'
-)
 
 COMMON = {
     "docs/decisions/0001-decision-log.md": "docs/decisions/0001-decision-log.md",
@@ -309,10 +305,6 @@ HOOK_COMMAND = (
     '"$CLAUDE_PROJECT_DIR"/.mesh/bin/mesh event record --source terminal; exit 0'
 )
 HOOK_MARK = ".mesh/bin/mesh event record"
-PM_LABEL_HINT = (
-    "label the PM pane (D82): start it with `projmux create claude --project <name> --label role=pm`; "
-    "until then every pm tool is refused and the operator-event hook records nothing"
-)
 MESH_GITIGNORE = "state.lock\n*.tmp\nevents.jsonl\nrefusals.jsonl\nruns/\nbin/\n"
 
 
